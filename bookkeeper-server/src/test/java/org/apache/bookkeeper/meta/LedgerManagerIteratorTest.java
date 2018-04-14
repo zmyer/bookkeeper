@@ -47,6 +47,7 @@ import org.apache.bookkeeper.client.BKException;
 import org.apache.bookkeeper.client.BookKeeper;
 import org.apache.bookkeeper.client.LedgerMetadata;
 import org.apache.bookkeeper.meta.LedgerManager.LedgerRangeIterator;
+import org.apache.bookkeeper.meta.zk.ZKMetadataDriverBase;
 import org.apache.bookkeeper.proto.BookkeeperInternalCallbacks.GenericCallback;
 import org.apache.bookkeeper.util.MathUtils;
 import org.apache.bookkeeper.util.ZkUtils;
@@ -420,6 +421,7 @@ public class LedgerManagerIteratorTest extends LedgerManagerTestCase {
                 try {
                     latch.await();
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     fail("Checker interrupted");
                 }
                 while (MathUtils.elapsedNanos(start) < runtime) {
@@ -448,6 +450,7 @@ public class LedgerManagerIteratorTest extends LedgerManagerTestCase {
                 try {
                     latch.await();
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     fail("Checker interrupted");
                     e.printStackTrace();
                 }
@@ -479,6 +482,7 @@ public class LedgerManagerIteratorTest extends LedgerManagerTestCase {
         }
     }
 
+    @SuppressWarnings("deprecation")
     @Test
     public void testLedgerParentNode() throws Throwable {
         /*
@@ -496,15 +500,19 @@ public class LedgerManagerIteratorTest extends LedgerManagerTestCase {
         }
         for (long ledgerId : ledgerIds) {
             String fullLedgerPath = lm.getLedgerPath(ledgerId);
-            String ledgerPath = fullLedgerPath.replaceAll(baseConf.getZkLedgersRootPath() + "/", "");
+            String ledgerPath = fullLedgerPath.replaceAll(
+                ZKMetadataDriverBase.resolveZkLedgersRootPath(baseConf) + "/",
+                "");
             String[] znodesOfLedger = ledgerPath.split("/");
             Assert.assertTrue(znodesOfLedger[0] + " is supposed to be valid parent ",
                     lm.isLedgerParentNode(znodesOfLedger[0]));
         }
     }
 
+    @SuppressWarnings("deprecation")
     @Test
     public void testLedgerManagerFormat() throws Throwable {
+        String zkLedgersRootPath = ZKMetadataDriverBase.resolveZkLedgersRootPath(baseConf);
         /*
          * this testcase applies only ZK based ledgermanager so it doesnt work
          * for MSLedgerManager
@@ -525,7 +533,7 @@ public class LedgerManagerIteratorTest extends LedgerManagerTestCase {
         // create some invalid nodes under zkLedgersRootPath
         Collection<String> invalidZnodes = Arrays.asList("12345", "12345678901L", "abc", "123d");
         for (String invalidZnode : invalidZnodes) {
-            ZkUtils.createFullPathOptimistic(zkc, baseConf.getZkLedgersRootPath() + "/" + invalidZnode,
+            ZkUtils.createFullPathOptimistic(zkc, zkLedgersRootPath + "/" + invalidZnode,
                     "data".getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
         }
 
@@ -533,7 +541,7 @@ public class LedgerManagerIteratorTest extends LedgerManagerTestCase {
          * get the count of total children under zkLedgersRootPath and also
          * count of the parent nodes of ledgers under zkLedgersRootPath
          */
-        List<String> childrenOfLedgersRootPath = zkc.getChildren(baseConf.getZkLedgersRootPath(), false);
+        List<String> childrenOfLedgersRootPath = zkc.getChildren(zkLedgersRootPath, false);
         int totalChildrenOfLedgersRootPath = childrenOfLedgersRootPath.size();
         int totalParentNodesOfLedgers = 0;
         for (String childOfLedgersRootPath : childrenOfLedgersRootPath) {
@@ -548,8 +556,8 @@ public class LedgerManagerIteratorTest extends LedgerManagerTestCase {
          * specialnode or invalid nodes created above
          */
         ledgerManagerFactory.format(baseConf,
-                new ZkLayoutManager(zkc, baseConf.getZkLedgersRootPath(), ZkUtils.getACLs(baseConf)));
-        List<String> childrenOfLedgersRootPathAfterFormat = zkc.getChildren(baseConf.getZkLedgersRootPath(), false);
+                new ZkLayoutManager(zkc, zkLedgersRootPath, ZkUtils.getACLs(baseConf)));
+        List<String> childrenOfLedgersRootPathAfterFormat = zkc.getChildren(zkLedgersRootPath, false);
         int totalChildrenOfLedgersRootPathAfterFormat = childrenOfLedgersRootPathAfterFormat.size();
         Assert.assertEquals("totalChildrenOfLedgersRootPathAfterFormat",
                 totalChildrenOfLedgersRootPath - totalParentNodesOfLedgers, totalChildrenOfLedgersRootPathAfterFormat);

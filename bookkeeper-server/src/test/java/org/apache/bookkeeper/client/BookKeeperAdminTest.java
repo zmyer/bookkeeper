@@ -21,6 +21,8 @@
 package org.apache.bookkeeper.client;
 
 import static com.google.common.base.Charsets.UTF_8;
+import static org.apache.bookkeeper.util.BookKeeperConstants.AVAILABLE_NODE;
+import static org.apache.bookkeeper.util.BookKeeperConstants.READONLY;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -30,17 +32,18 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Random;
-
 import org.apache.bookkeeper.bookie.Bookie;
-import org.apache.bookkeeper.client.BKException.BKIllegalOpException;
 import org.apache.bookkeeper.client.BookKeeper.DigestType;
 import org.apache.bookkeeper.conf.ClientConfiguration;
 import org.apache.bookkeeper.conf.ServerConfiguration;
 import org.apache.bookkeeper.meta.ZkLedgerUnderreplicationManager;
+import org.apache.bookkeeper.meta.zk.ZKMetadataDriverBase;
+import org.apache.bookkeeper.proto.BookieServer;
 import org.apache.bookkeeper.replication.ReplicationException.UnavailableException;
 import org.apache.bookkeeper.test.BookKeeperClusterTestCase;
-import org.apache.bookkeeper.test.annotations.FlakyTest;
 import org.apache.bookkeeper.util.BookKeeperConstants;
 import org.apache.commons.io.FileUtils;
 import org.apache.zookeeper.CreateMode;
@@ -58,7 +61,7 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
     private static final Logger LOG = LoggerFactory.getLogger(BookKeeperAdminTest.class);
     private DigestType digestType = DigestType.CRC32;
     private static final String PASSWORD = "testPasswd";
-    private static final int numOfBookies = 6;
+    private static final int numOfBookies = 2;
     private final int lostBookieRecoveryDelayInitValue = 1800;
 
     public BookKeeperAdminTest() {
@@ -70,16 +73,19 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
 
     @Test
     public void testLostBookieRecoveryDelayValue() throws Exception {
-        BookKeeperAdmin bkAdmin = new BookKeeperAdmin(zkUtil.getZooKeeperConnectString());
-        assertEquals("LostBookieRecoveryDelay", lostBookieRecoveryDelayInitValue, bkAdmin.getLostBookieRecoveryDelay());
-        int newLostBookieRecoveryDelayValue = 2400;
-        bkAdmin.setLostBookieRecoveryDelay(newLostBookieRecoveryDelayValue);
-        assertEquals("LostBookieRecoveryDelay", newLostBookieRecoveryDelayValue, bkAdmin.getLostBookieRecoveryDelay());
-        assertEquals("LostBookieRecoveryDelay", newLostBookieRecoveryDelayValue, bkAdmin.getLostBookieRecoveryDelay());
-        newLostBookieRecoveryDelayValue = 3000;
-        bkAdmin.setLostBookieRecoveryDelay(newLostBookieRecoveryDelayValue);
-        assertEquals("LostBookieRecoveryDelay", newLostBookieRecoveryDelayValue, bkAdmin.getLostBookieRecoveryDelay());
-        bkAdmin.close();
+        try (BookKeeperAdmin bkAdmin = new BookKeeperAdmin(zkUtil.getZooKeeperConnectString())) {
+            assertEquals("LostBookieRecoveryDelay",
+                lostBookieRecoveryDelayInitValue, bkAdmin.getLostBookieRecoveryDelay());
+            int newLostBookieRecoveryDelayValue = 2400;
+            bkAdmin.setLostBookieRecoveryDelay(newLostBookieRecoveryDelayValue);
+            assertEquals("LostBookieRecoveryDelay",
+                newLostBookieRecoveryDelayValue, bkAdmin.getLostBookieRecoveryDelay());
+            newLostBookieRecoveryDelayValue = 3000;
+            bkAdmin.setLostBookieRecoveryDelay(newLostBookieRecoveryDelayValue);
+            assertEquals("LostBookieRecoveryDelay",
+                newLostBookieRecoveryDelayValue, bkAdmin.getLostBookieRecoveryDelay());
+            LOG.info("Test Done");
+        }
     }
 
     @Test
@@ -104,6 +110,7 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
         ledgerHandle.addEntry(0, "data".getBytes());
         ledgerHandle.close();
 
+        BookieServer bookieToKill = bs.get(1);
         killBookie(1);
         /*
          * since lostBookieRecoveryDelay is set, when a bookie is died, it will
@@ -112,134 +119,13 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
          */
         bkAdmin.triggerAudit();
         Thread.sleep(500);
-        Iterator<Long> ledgersToRereplicate = urLedgerMgr.listLedgersToRereplicate(null);
+        Iterator<Map.Entry<Long, List<String>>> ledgersToRereplicate = urLedgerMgr.listLedgersToRereplicate(null,
+                true);
         assertTrue("There are supposed to be underreplicatedledgers", ledgersToRereplicate.hasNext());
-        assertEquals("Underreplicated ledgerId", ledgerId, ledgersToRereplicate.next().longValue());
-        bkAdmin.close();
-    }
-
-    @FlakyTest("https://github.com/apache/bookkeeper/issues/502")
-    public void testDecommissionBookie() throws Exception {
-        ZkLedgerUnderreplicationManager urLedgerMgr = new ZkLedgerUnderreplicationManager(baseClientConf, zkc);
-        BookKeeperAdmin bkAdmin = new BookKeeperAdmin(zkUtil.getZooKeeperConnectString());
-
-        int numOfLedgers = 2 * numOfBookies;
-        int numOfEntries = 2 * numOfBookies;
-        for (int i = 0; i < numOfLedgers; i++) {
-            LedgerHandle lh = bkc.createLedger(3, 2, digestType, PASSWORD.getBytes());
-            for (int j = 0; j < numOfEntries; j++) {
-                lh.addEntry("entry".getBytes());
-            }
-            lh.close();
-        }
-        /*
-         * create ledgers having empty segments (segment with no entries)
-         */
-        for (int i = 0; i < numOfLedgers; i++) {
-            LedgerHandle emptylh = bkc.createLedger(3, 2, digestType, PASSWORD.getBytes());
-            emptylh.close();
-        }
-
-        try {
-            /*
-             * if we try to call decommissionBookie for a bookie which is not
-             * shutdown, then it should throw BKIllegalOpException
-             */
-            bkAdmin.decommissionBookie(bs.get(0).getLocalAddress());
-            fail("Expected BKIllegalOpException because that bookie is not shutdown yet");
-        } catch (BKIllegalOpException bkioexc) {
-            // expected IllegalException
-        }
-
-        ServerConfiguration killedBookieConf = killBookie(1);
-        /*
-         * this decommisionBookie should make sure that there are no
-         * underreplicated ledgers because of this bookie
-         */
-        bkAdmin.decommissionBookie(Bookie.getBookieAddress(killedBookieConf));
-        bkAdmin.triggerAudit();
-        Thread.sleep(500);
-        Iterator<Long> ledgersToRereplicate = urLedgerMgr.listLedgersToRereplicate(null);
-        if (ledgersToRereplicate.hasNext()) {
-            while (ledgersToRereplicate.hasNext()) {
-                Long ledgerId = ledgersToRereplicate.next();
-                LOG.error("Ledger: {} is underreplicated which is not expected", ledgerId);
-            }
-            fail("There are not supposed to be any underreplicatedledgers");
-        }
-
-        killedBookieConf = killBookie(0);
-        bkAdmin.decommissionBookie(Bookie.getBookieAddress(killedBookieConf));
-        bkAdmin.triggerAudit();
-        Thread.sleep(500);
-        ledgersToRereplicate = urLedgerMgr.listLedgersToRereplicate(null);
-        if (ledgersToRereplicate.hasNext()) {
-            while (ledgersToRereplicate.hasNext()) {
-                Long ledgerId = ledgersToRereplicate.next();
-                LOG.error("Ledger: {} is underreplicated which is not expected", ledgerId);
-            }
-            fail("There are not supposed to be any underreplicatedledgers");
-        }
-        bkAdmin.close();
-    }
-
-    @Test
-    public void testDecommissionForLedgersWithMultipleSegmentsAndNotWriteClosed() throws Exception {
-        ZkLedgerUnderreplicationManager urLedgerMgr = new ZkLedgerUnderreplicationManager(baseClientConf, zkc);
-        BookKeeperAdmin bkAdmin = new BookKeeperAdmin(zkUtil.getZooKeeperConnectString());
-        int numOfEntries = 2 * numOfBookies;
-
-        LedgerHandle lh1 = bkc.createLedgerAdv(1L, numBookies, 3, 3, digestType, PASSWORD.getBytes(), null);
-        LedgerHandle lh2 = bkc.createLedgerAdv(2L, numBookies, 3, 3, digestType, PASSWORD.getBytes(), null);
-        LedgerHandle lh3 = bkc.createLedgerAdv(3L, numBookies, 3, 3, digestType, PASSWORD.getBytes(), null);
-        LedgerHandle lh4 = bkc.createLedgerAdv(4L, numBookies, 3, 3, digestType, PASSWORD.getBytes(), null);
-        for (int j = 0; j < numOfEntries; j++) {
-            lh1.addEntry(j, "data".getBytes());
-            lh2.addEntry(j, "data".getBytes());
-            lh3.addEntry(j, "data".getBytes());
-            lh4.addEntry(j, "data".getBytes());
-        }
-
-        startNewBookie();
-
-        assertEquals("Number of Available Bookies", numOfBookies + 1, bkAdmin.getAvailableBookies().size());
-
-        ServerConfiguration killedBookieConf = killBookie(0);
-
-        /*
-         * since one of the bookie is killed, ensemble change happens when next
-         * write is made.So new fragment will be created for those 2 ledgers.
-         */
-        for (int j = numOfEntries; j < 2 * numOfEntries; j++) {
-            lh1.addEntry(j, "data".getBytes());
-            lh2.addEntry(j, "data".getBytes());
-        }
-
-        /*
-         * Here lh1 and lh2 have multiple fragments and are writeclosed. But lh3 and lh4 are
-         * not writeclosed and contains only one fragment.
-         */
-        lh1.close();
-        lh2.close();
-
-        /*
-         * If the last fragment of the ledger is underreplicated and if the
-         * ledger is not closed then it will remain underreplicated for
-         * openLedgerRereplicationGracePeriod (by default 30 secs). For more
-         * info. Check BOOKKEEPER-237 and BOOKKEEPER-325. But later
-         * ReplicationWorker will fence the ledger.
-         */
-        bkAdmin.decommissionBookie(Bookie.getBookieAddress(killedBookieConf));
-        bkAdmin.triggerAudit();
-        Thread.sleep(500);
-        Iterator<Long> ledgersToRereplicate = urLedgerMgr.listLedgersToRereplicate(null);
-        if (ledgersToRereplicate.hasNext()) {
-            while (ledgersToRereplicate.hasNext()) {
-                Long ledgerId = ledgersToRereplicate.next();
-                LOG.error("Ledger: {} is underreplicated which is not expected", ledgerId);
-            }
-            fail("There are not supposed to be any underreplicatedledgers");
-        }
+        Entry<Long, List<String>> urlWithReplicaList = ledgersToRereplicate.next();
+        assertEquals("Underreplicated ledgerId", ledgerId, urlWithReplicaList.getKey().longValue());
+        assertTrue("Missingreplica of Underreplicated ledgerId should contain " + bookieToKill.getLocalAddress(),
+                urlWithReplicaList.getValue().contains(bookieToKill.getLocalAddress().toString()));
         bkAdmin.close();
     }
 
@@ -276,7 +162,9 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
         Assert.assertFalse("initBookie shouldn't have succeeded, since cookie in ZK is not deleted yet",
                 BookKeeperAdmin.initBookie(confOfExistingBookie));
         String bookieId = Bookie.getBookieAddress(confOfExistingBookie).toString();
-        String bookieCookiePath = confOfExistingBookie.getZkLedgersRootPath() + "/" + BookKeeperConstants.COOKIE_NODE
+        String bookieCookiePath =
+            ZKMetadataDriverBase.resolveZkLedgersRootPath(confOfExistingBookie)
+                + "/" + BookKeeperConstants.COOKIE_NODE
                 + "/" + bookieId;
         zkc.delete(bookieCookiePath, -1);
 
@@ -288,16 +176,19 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
     public void testInitNewCluster() throws Exception {
         ServerConfiguration newConfig = new ServerConfiguration(baseConf);
         String ledgersRootPath = "/testledgers";
-        newConfig.setZkLedgersRootPath(ledgersRootPath);
-        newConfig.setZkServers(zkUtil.getZooKeeperConnectString());
+        newConfig.setMetadataServiceUri(newMetadataServiceUri(ledgersRootPath));
         Assert.assertTrue("New cluster should be initialized successfully", BookKeeperAdmin.initNewCluster(newConfig));
 
         Assert.assertTrue("Cluster rootpath should have been created successfully " + ledgersRootPath,
                 (zkc.exists(ledgersRootPath, false) != null));
-        String availableBookiesPath = newConfig.getZkAvailableBookiesPath();
+        String availableBookiesPath = ZKMetadataDriverBase.resolveZkLedgersRootPath(newConfig) + "/" + AVAILABLE_NODE;
         Assert.assertTrue("AvailableBookiesPath should have been created successfully " + availableBookiesPath,
                 (zkc.exists(availableBookiesPath, false) != null));
-        String instanceIdPath = newConfig.getZkLedgersRootPath() + "/" + BookKeeperConstants.INSTANCEID;
+        String readonlyBookiesPath = availableBookiesPath + "/" + READONLY;
+        Assert.assertTrue("ReadonlyBookiesPath should have been created successfully " + readonlyBookiesPath,
+            (zkc.exists(readonlyBookiesPath, false) != null));
+        String instanceIdPath = ZKMetadataDriverBase.resolveZkLedgersRootPath(newConfig)
+            + "/" + BookKeeperConstants.INSTANCEID;
         Assert.assertTrue("InstanceId node should have been created successfully" + instanceIdPath,
                 (zkc.exists(instanceIdPath, false) != null));
 
@@ -312,7 +203,8 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
         Random rand = new Random();
         for (int i = 0; i < numOfBookies; i++) {
             String ipString = InetAddresses.fromInteger(rand.nextInt()).getHostAddress();
-            String regPath = newConfig.getZkAvailableBookiesPath() + "/" + ipString + ":3181";
+            String regPath = ZKMetadataDriverBase.resolveZkLedgersRootPath(newConfig)
+                + "/" + AVAILABLE_NODE + "/" + ipString + ":3181";
             zkc.create(regPath, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
         }
 
@@ -330,7 +222,7 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
     public void testNukeExistingClusterWithForceOption() throws Exception {
         String ledgersRootPath = "/testledgers";
         ServerConfiguration newConfig = new ServerConfiguration(baseConf);
-        newConfig.setZkLedgersRootPath(ledgersRootPath);
+        newConfig.setMetadataServiceUri(newMetadataServiceUri(ledgersRootPath));
         List<String> bookiesRegPaths = new ArrayList<String>();
         initiateNewClusterAndCreateLedgers(newConfig, bookiesRegPaths);
 
@@ -352,7 +244,7 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
     public void testNukeExistingClusterWithInstanceId() throws Exception {
         String ledgersRootPath = "/testledgers";
         ServerConfiguration newConfig = new ServerConfiguration(baseConf);
-        newConfig.setZkLedgersRootPath(ledgersRootPath);
+        newConfig.setMetadataServiceUri(newMetadataServiceUri(ledgersRootPath));
         List<String> bookiesRegPaths = new ArrayList<String>();
         initiateNewClusterAndCreateLedgers(newConfig, bookiesRegPaths);
 
@@ -364,7 +256,9 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
             zkc.delete(bookiesRegPaths.get(i), -1);
         }
 
-        byte[] data = zkc.getData(newConfig.getZkLedgersRootPath() + "/" + BookKeeperConstants.INSTANCEID, false, null);
+        byte[] data = zkc.getData(
+            ZKMetadataDriverBase.resolveZkLedgersRootPath(newConfig) + "/" + BookKeeperConstants.INSTANCEID,
+            false, null);
         String readInstanceId = new String(data, UTF_8);
 
         Assert.assertTrue("New cluster should be nuked successfully",
@@ -377,7 +271,7 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
     public void tryNukingExistingClustersWithInvalidParams() throws Exception {
         String ledgersRootPath = "/testledgers";
         ServerConfiguration newConfig = new ServerConfiguration(baseConf);
-        newConfig.setZkLedgersRootPath(ledgersRootPath);
+        newConfig.setMetadataServiceUri(newMetadataServiceUri(ledgersRootPath));
         List<String> bookiesRegPaths = new ArrayList<String>();
         initiateNewClusterAndCreateLedgers(newConfig, bookiesRegPaths);
 
@@ -392,15 +286,17 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
         /*
          * read instanceId
          */
-        byte[] data = zkc.getData(newConfig.getZkLedgersRootPath() + "/" + BookKeeperConstants.INSTANCEID, false, null);
+        byte[] data = zkc.getData(
+            ZKMetadataDriverBase.resolveZkLedgersRootPath(newConfig) + "/" + BookKeeperConstants.INSTANCEID,
+            false, null);
         String readInstanceId = new String(data, UTF_8);
 
         /*
          * register a RO bookie
          */
         String ipString = InetAddresses.fromInteger((new Random()).nextInt()).getHostAddress();
-        String roBookieRegPath = newConfig.getZkAvailableBookiesPath() + "/" + BookKeeperConstants.READONLY + "/"
-                + ipString + ":3181";
+        String roBookieRegPath = ZKMetadataDriverBase.resolveZkLedgersRootPath(newConfig)
+            + "/" + AVAILABLE_NODE + "/" + READONLY + "/" + ipString + ":3181";
         zkc.create(roBookieRegPath, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
 
         Assert.assertFalse("Cluster should'nt be nuked since instanceid is not provided and force option is not set",
@@ -423,10 +319,11 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
          */
         Assert.assertTrue("Cluster rootpath should be existing " + ledgersRootPath,
                 (zkc.exists(ledgersRootPath, false) != null));
-        String availableBookiesPath = newConfig.getZkAvailableBookiesPath();
+        String availableBookiesPath = ZKMetadataDriverBase.resolveZkLedgersRootPath(newConfig) + "/" + AVAILABLE_NODE;
         Assert.assertTrue("AvailableBookiesPath should be existing " + availableBookiesPath,
                 (zkc.exists(availableBookiesPath, false) != null));
-        String instanceIdPath = newConfig.getZkLedgersRootPath() + "/" + BookKeeperConstants.INSTANCEID;
+        String instanceIdPath = ZKMetadataDriverBase.resolveZkLedgersRootPath(newConfig)
+            + "/" + BookKeeperConstants.INSTANCEID;
         Assert.assertTrue("InstanceId node should be existing" + instanceIdPath,
                 (zkc.exists(instanceIdPath, false) != null));
         String ledgersLayout = ledgersRootPath + "/" + BookKeeperConstants.LAYOUT_ZNODE;
@@ -452,7 +349,6 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
 
     void initiateNewClusterAndCreateLedgers(ServerConfiguration newConfig, List<String> bookiesRegPaths)
             throws Exception {
-        newConfig.setZkServers(zkUtil.getZooKeeperConnectString());
         Assert.assertTrue("New cluster should be initialized successfully", BookKeeperAdmin.initNewCluster(newConfig));
 
         /**
@@ -462,7 +358,8 @@ public class BookKeeperAdminTest extends BookKeeperClusterTestCase {
         Random rand = new Random();
         for (int i = 0; i < numberOfBookies; i++) {
             String ipString = InetAddresses.fromInteger(rand.nextInt()).getHostAddress();
-            bookiesRegPaths.add(newConfig.getZkAvailableBookiesPath() + "/" + ipString + ":3181");
+            bookiesRegPaths.add(ZKMetadataDriverBase.resolveZkLedgersRootPath(newConfig)
+                + "/" + AVAILABLE_NODE + "/" + ipString + ":3181");
             zkc.create(bookiesRegPaths.get(i), new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
         }
 

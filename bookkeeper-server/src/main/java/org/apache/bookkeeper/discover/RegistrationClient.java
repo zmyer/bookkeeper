@@ -18,19 +18,12 @@
 
 package org.apache.bookkeeper.discover;
 
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ScheduledExecutorService;
-import org.apache.bookkeeper.client.BKException;
 import org.apache.bookkeeper.common.annotation.InterfaceAudience.LimitedPrivate;
 import org.apache.bookkeeper.common.annotation.InterfaceStability.Evolving;
-import org.apache.bookkeeper.conf.ClientConfiguration;
-import org.apache.bookkeeper.meta.LayoutManager;
 import org.apache.bookkeeper.net.BookieSocketAddress;
-import org.apache.bookkeeper.stats.StatsLogger;
 import org.apache.bookkeeper.versioning.Versioned;
-import org.apache.zookeeper.ZooKeeper;
 
 /**
  * A registration client, which the bookkeeper client will use to interact with registration service.
@@ -47,22 +40,6 @@ public interface RegistrationClient extends AutoCloseable {
         void onBookiesChanged(Versioned<Set<BookieSocketAddress>> bookies);
 
     }
-
-    /**
-     * Initialize the registration client with provided resources.
-     *
-     * <p>The existence of <i>zkSupplier</i> is for backward compatability.
-     *
-     * @param conf client configuration
-     * @param statsLogger stats logger
-     * @param zkOptional a supplier to supply zookeeper client.
-     * @return
-     */
-    RegistrationClient initialize(ClientConfiguration conf,
-                                  ScheduledExecutorService scheduler,
-                                  StatsLogger statsLogger,
-                                  Optional<ZooKeeper> zkOptional)
-        throws BKException;
 
     @Override
     void close();
@@ -116,12 +93,5 @@ public interface RegistrationClient extends AutoCloseable {
      * @param listener listener to receive the topology changes of bookies.
      */
     void unwatchReadOnlyBookies(RegistrationListener listener);
-
-    /**
-     * Gets layout manager.
-     *
-     * @return the layout manager
-     */
-    LayoutManager getLayoutManager();
 
 }

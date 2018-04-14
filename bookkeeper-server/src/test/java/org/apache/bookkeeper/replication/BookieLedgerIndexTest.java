@@ -33,10 +33,11 @@ import java.util.Set;
 import org.apache.bookkeeper.client.BKException;
 import org.apache.bookkeeper.client.BookKeeper.DigestType;
 import org.apache.bookkeeper.client.LedgerHandle;
+import org.apache.bookkeeper.meta.AbstractZkLedgerManagerFactory;
 import org.apache.bookkeeper.meta.LedgerManager;
 import org.apache.bookkeeper.meta.LedgerManagerFactory;
-import org.apache.bookkeeper.meta.MSLedgerManagerFactory;
 import org.apache.bookkeeper.meta.ZkLayoutManager;
+import org.apache.bookkeeper.meta.zk.ZKMetadataDriverBase;
 import org.apache.bookkeeper.replication.ReplicationException.BKAuditException;
 import org.apache.bookkeeper.test.BookKeeperClusterTestCase;
 import org.apache.bookkeeper.util.ZkUtils;
@@ -85,15 +86,16 @@ public class BookieLedgerIndexTest extends BookKeeperClusterTestCase {
     @Before
     public void setUp() throws Exception {
         super.setUp();
-        baseConf.setZkServers(zkUtil.getZooKeeperConnectString());
+        baseConf.setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         rng = new Random(System.currentTimeMillis()); // Initialize the Random
         // Number Generator
         entries = new ArrayList<byte[]>(); // initialize the entries list
         ledgerList = new ArrayList<Long>(3);
         // initialize ledger manager
-        newLedgerManagerFactory = LedgerManagerFactory.newLedgerManagerFactory(
+        newLedgerManagerFactory = AbstractZkLedgerManagerFactory.newLedgerManagerFactory(
             baseConf,
-            new ZkLayoutManager(zkc, baseConf.getZkLedgersRootPath(), ZkUtils.getACLs(baseConf)));
+            new ZkLayoutManager(zkc,
+                ZKMetadataDriverBase.resolveZkLedgersRootPath(baseConf), ZkUtils.getACLs(baseConf)));
 
         ledgerManager = newLedgerManagerFactory.newLedgerManager();
     }
@@ -144,12 +146,13 @@ public class BookieLedgerIndexTest extends BookKeeperClusterTestCase {
     /**
      * Verify ledger index with failed bookies and throws exception.
      */
+    @SuppressWarnings("deprecation")
     @Test
     public void testWithoutZookeeper() throws Exception {
         // This test case is for ledger metadata that stored in ZooKeeper. As
         // far as MSLedgerManagerFactory, ledger metadata are stored in other
         // storage. So this test is not suitable for MSLedgerManagerFactory.
-        if (newLedgerManagerFactory instanceof MSLedgerManagerFactory) {
+        if (newLedgerManagerFactory instanceof org.apache.bookkeeper.meta.MSLedgerManagerFactory) {
             return;
         }
 
@@ -212,6 +215,7 @@ public class BookieLedgerIndexTest extends BookKeeperClusterTestCase {
             LOG.error("Test failed", e);
             fail("Test failed due to BookKeeper exception");
         } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             LOG.error("Test failed", e);
             fail("Test failed due to interruption");
         }

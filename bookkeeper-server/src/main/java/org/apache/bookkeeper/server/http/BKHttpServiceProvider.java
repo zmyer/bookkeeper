@@ -33,7 +33,7 @@ import org.apache.bookkeeper.http.HttpServiceProvider;
 import org.apache.bookkeeper.http.service.ErrorHttpService;
 import org.apache.bookkeeper.http.service.HeartbeatService;
 import org.apache.bookkeeper.http.service.HttpEndpointService;
-import org.apache.bookkeeper.meta.LayoutManager;
+import org.apache.bookkeeper.meta.zk.ZKMetadataDriverBase;
 import org.apache.bookkeeper.proto.BookieServer;
 import org.apache.bookkeeper.replication.Auditor;
 import org.apache.bookkeeper.replication.AutoRecoveryMain;
@@ -61,6 +61,8 @@ import org.apache.zookeeper.ZooKeeper;
  * Bookkeeper based implementation of HttpServiceProvider,
  * which provide bookkeeper services to handle http requests
  * from different http endpoints.
+ *
+ * <p>TODO: eliminate the direct usage of zookeeper here {@link https://github.com/apache/bookkeeper/issues/1332}
  */
 @Slf4j
 public class BKHttpServiceProvider implements HttpServiceProvider {
@@ -68,11 +70,9 @@ public class BKHttpServiceProvider implements HttpServiceProvider {
     private final BookieServer bookieServer;
     private final AutoRecoveryMain autoRecovery;
     private final ServerConfiguration serverConf;
-    private final LayoutManager layoutManager;
     private final ZooKeeper zk;
     private final BookKeeperAdmin bka;
     private final ExecutorService executor;
-
 
     private BKHttpServiceProvider(BookieServer bookieServer,
                                   AutoRecoveryMain autoRecovery,
@@ -81,14 +81,13 @@ public class BKHttpServiceProvider implements HttpServiceProvider {
         this.bookieServer = bookieServer;
         this.autoRecovery = autoRecovery;
         this.serverConf = serverConf;
-        this.layoutManager = bookieServer.getBookie().getRegistrationManager().getLayoutManager();
+        String zkServers = ZKMetadataDriverBase.resolveZkServers(serverConf);
         this.zk = ZooKeeperClient.newBuilder()
-          .connectString(serverConf.getZkServers())
+          .connectString(zkServers)
           .sessionTimeoutMs(serverConf.getZkTimeout())
           .build();
 
         ClientConfiguration clientConfiguration = new ClientConfiguration(serverConf);
-        clientConfiguration.setZkServers(serverConf.getZkServers());
         this.bka = new BookKeeperAdmin(clientConfiguration);
 
         this.executor = Executors.newSingleThreadExecutor(
@@ -105,9 +104,13 @@ public class BKHttpServiceProvider implements HttpServiceProvider {
             if (zk != null) {
                 zk.close();
             }
-        } catch (InterruptedException | BKException e) {
-            log.error("Error while close BKHttpServiceProvider", e);
-            throw new IOException("Error while close BKHttpServiceProvider", e);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.error("Interruption while closing BKHttpServiceProvider", ie);
+            throw new IOException("Interruption while closing BKHttpServiceProvider", ie);
+        } catch (BKException e) {
+            log.error("Error while closing BKHttpServiceProvider", e);
+            throw new IOException("Error while closing BKHttpServiceProvider", e);
         }
     }
 

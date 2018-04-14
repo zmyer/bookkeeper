@@ -42,7 +42,6 @@ import org.apache.bookkeeper.bookie.FileInfoBackingCache.CachedFileInfo;
 import org.apache.bookkeeper.conf.ServerConfiguration;
 import org.apache.bookkeeper.conf.TestBKConfiguration;
 import org.apache.bookkeeper.meta.LedgerManager;
-import org.apache.bookkeeper.meta.LedgerManagerFactory;
 import org.apache.bookkeeper.net.BookieSocketAddress;
 import org.apache.bookkeeper.proto.BookkeeperInternalCallbacks;
 import org.apache.bookkeeper.stats.StatsLogger;
@@ -64,7 +63,6 @@ public class LedgerCacheTest {
     private static final Logger LOG = LoggerFactory.getLogger(LedgerCacheTest.class);
 
     SnapshotMap<Long, Boolean> activeLedgers;
-    LedgerManagerFactory ledgerManagerFactory;
     LedgerCache ledgerCache;
     Thread flushThread;
     ServerConfiguration conf;
@@ -82,13 +80,11 @@ public class LedgerCacheTest {
         new File(ledgerDir, BookKeeperConstants.CURRENT_DIR).mkdir();
 
         conf = TestBKConfiguration.newServerConfiguration();
-        conf.setZkServers(null);
+        conf.setMetadataServiceUri(null);
         conf.setJournalDirName(txnDir.getPath());
         conf.setLedgerDirNames(new String[] { ledgerDir.getPath() });
         bookie = new Bookie(conf);
 
-        ledgerManagerFactory =
-            LedgerManagerFactory.newLedgerManagerFactory(conf, null);
         activeLedgers = new SnapshotMap<Long, Boolean>();
         ledgerCache = ((InterleavedLedgerStorage) bookie.ledgerStorage).ledgerCache;
     }
@@ -100,7 +96,6 @@ public class LedgerCacheTest {
             flushThread.join();
         }
         bookie.ledgerStorage.shutdown();
-        ledgerManagerFactory.close();
         FileUtils.deleteDirectory(txnDir);
         FileUtils.deleteDirectory(ledgerDir);
         for (File dir : tempDirs) {
@@ -321,7 +316,7 @@ public class LedgerCacheTest {
         Bookie.checkDirectoryStructure(Bookie.getCurrentDirectory(ledgerDir));
 
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
-        conf.setZkServers(null);
+        conf.setMetadataServiceUri(null);
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
             .setFlushInterval(1000)
@@ -332,11 +327,11 @@ public class LedgerCacheTest {
         b.start();
         for (int i = 1; i <= numLedgers; i++) {
             ByteBuf packet = generateEntry(i, 1);
-            b.addEntry(packet, new Bookie.NopWriteCallback(), null, "passwd".getBytes());
+            b.addEntry(packet, false, new Bookie.NopWriteCallback(), null, "passwd".getBytes());
         }
 
         conf = TestBKConfiguration.newServerConfiguration();
-        conf.setZkServers(null);
+        conf.setMetadataServiceUri(null);
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() });
 
@@ -539,7 +534,8 @@ public class LedgerCacheTest {
         // this bookie.addEntry call is required. FileInfo for Ledger 1 would be created with this call.
         // without the fileinfo, 'flushTestSortedLedgerStorage.addEntry' calls will fail
         // because of BOOKKEEPER-965 change.
-        bookie.addEntry(generateEntry(1, 1), new Bookie.NopWriteCallback(), null, "passwd".getBytes());
+        bookie.addEntry(generateEntry(1, 1), false, new Bookie.NopWriteCallback(), null, "passwd".getBytes());
+
         flushTestSortedLedgerStorage.addEntry(generateEntry(1, 2));
         assertFalse("Bookie is expected to be in ReadWrite mode", bookie.isReadOnly());
         assertTrue("EntryMemTable SnapShot is expected to be empty", memTable.snapshot.isEmpty());
@@ -583,7 +579,7 @@ public class LedgerCacheTest {
         FlushTestSortedLedgerStorage flushTestSortedLedgerStorage = (FlushTestSortedLedgerStorage) bookie.ledgerStorage;
         EntryMemTable memTable = flushTestSortedLedgerStorage.memTable;
 
-        bookie.addEntry(generateEntry(1, 1), new Bookie.NopWriteCallback(), null, "passwd".getBytes());
+        bookie.addEntry(generateEntry(1, 1), false, new Bookie.NopWriteCallback(), null, "passwd".getBytes());
         flushTestSortedLedgerStorage.addEntry(generateEntry(1, 2));
         assertFalse("Bookie is expected to be in ReadWrite mode", bookie.isReadOnly());
         assertTrue("EntryMemTable SnapShot is expected to be empty", memTable.snapshot.isEmpty());
@@ -598,7 +594,7 @@ public class LedgerCacheTest {
         // after flush failure, the bookie is set to readOnly
         assertTrue("Bookie is expected to be in Read mode", bookie.isReadOnly());
         // write fail
-        bookie.addEntry(generateEntry(1, 3), new BookkeeperInternalCallbacks.WriteCallback(){
+        bookie.addEntry(generateEntry(1, 3), false, new BookkeeperInternalCallbacks.WriteCallback(){
             public void writeComplete(int rc, long ledgerId, long entryId, BookieSocketAddress addr, Object ctx){
                 LOG.info("fail write to bk");
                 assertTrue(rc != OK);

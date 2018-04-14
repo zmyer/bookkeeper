@@ -32,6 +32,7 @@ import static org.junit.Assert.fail;
 import com.google.common.collect.Sets;
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -40,7 +41,8 @@ import org.apache.bookkeeper.client.BookKeeperAdmin;
 import org.apache.bookkeeper.conf.ServerConfiguration;
 import org.apache.bookkeeper.conf.TestBKConfiguration;
 import org.apache.bookkeeper.discover.RegistrationManager;
-import org.apache.bookkeeper.discover.ZKRegistrationManager;
+import org.apache.bookkeeper.meta.MetadataBookieDriver;
+import org.apache.bookkeeper.meta.MetadataDrivers;
 import org.apache.bookkeeper.stats.NullStatsLogger;
 import org.apache.bookkeeper.test.BookKeeperClusterTestCase;
 import org.apache.bookkeeper.test.PortManager;
@@ -75,21 +77,24 @@ public class CookieTest extends BookKeeperClusterTestCase {
         return d.getPath();
     }
 
+    MetadataBookieDriver metadataBookieDriver;
     RegistrationManager rm;
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
-        rm = new ZKRegistrationManager();
-        baseConf.setZkServers(zkUtil.getZooKeeperConnectString());
-        rm.initialize(baseConf, () -> {}, NullStatsLogger.INSTANCE);
+        baseConf.setMetadataServiceUri(zkUtil.getMetadataServiceUri());
+        this.metadataBookieDriver = MetadataDrivers.getBookieDriver(
+            URI.create(baseConf.getMetadataServiceUri()));
+        this.metadataBookieDriver.initialize(baseConf, () -> {}, NullStatsLogger.INSTANCE);
+        this.rm = metadataBookieDriver.getRegistrationManager();
     }
 
     @Override
     public void tearDown() throws Exception {
         super.tearDown();
-        if (rm != null) {
-            rm.close();
+        if (metadataBookieDriver != null) {
+            metadataBookieDriver.close();
         }
     }
 
@@ -102,7 +107,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(newDirectory(false))
             .setLedgerDirNames(new String[] { newDirectory(false) })
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         try {
             Bookie b = new Bookie(conf);
         } catch (Exception e) {
@@ -131,7 +136,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf2.setJournalDirName(journalDir)
             .setLedgerDirNames(new String[] { ledgerDir })
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         Cookie.Builder cookieBuilder2 = Cookie.generateCookie(conf2);
         Cookie c2 = cookieBuilder2.build();
         c2.writeToDirectory(new File(journalDir, "current"));
@@ -159,7 +164,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir)
             .setLedgerDirNames(ledgerDirs)
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         Bookie b = new Bookie(conf); // should work fine
         b.start();
@@ -200,7 +205,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir)
             .setLedgerDirNames(ledgerDirs)
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         Bookie b = new Bookie(conf); // should work fine
         b.start();
@@ -230,7 +235,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir)
             .setLedgerDirNames(ledgerDirs)
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         Bookie b = new Bookie(conf); // should work fine
         b.start();
@@ -260,7 +265,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir)
             .setLedgerDirNames(new String[] { ledgerDir0 })
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         Bookie b = new Bookie(conf); // should work fine
         b.start();
@@ -295,7 +300,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
             .setIndexDirName(new String[] { indexDir0 })
             .setBookiePort(bookiePort)
             .setAllowStorageExpansion(true)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         Bookie b = new Bookie(conf); // should work fine
         b.start();
@@ -378,7 +383,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
             .setIndexDirName(new String[] { indexDir0 })
             .setBookiePort(bookiePort)
             .setAllowStorageExpansion(true)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         Bookie b = new Bookie(conf); // should work fine
         b.start();
@@ -430,7 +435,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir)
             .setLedgerDirNames(new String[] { ledgerDir0 , newDirectory() })
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         Bookie b = new Bookie(conf); // should work fine
         b.start();
@@ -455,7 +460,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(newDirectory())
             .setLedgerDirNames(new String[] { newDirectory() , newDirectory() })
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         Bookie b = new Bookie(conf); // should work fine
         b.start();
         b.shutdown();
@@ -481,7 +486,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(newDirectory())
             .setLedgerDirNames(new String[] { newDirectory() , newDirectory() })
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         Bookie b = new Bookie(conf); // should work fine
         b.start();
         b.shutdown();
@@ -490,7 +495,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(newDirectory())
             .setLedgerDirNames(new String[] { newDirectory() , newDirectory() })
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         try {
             b = new Bookie(conf);
             fail("Shouldn't have been able to start");
@@ -505,7 +510,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
     @Test
     public void testVerifyCookieWithFormat() throws Exception {
         ServerConfiguration adminConf = new ServerConfiguration();
-        adminConf.setZkServers(zkUtil.getZooKeeperConnectString());
+        adminConf.setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         adminConf.setProperty("bookkeeper.format", true);
         // Format the BK Metadata and generate INSTANCEID
@@ -515,7 +520,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         bookieConf.setJournalDirName(newDirectory(false))
             .setLedgerDirNames(new String[] { newDirectory(false) })
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         // Bookie should start successfully for fresh env.
         new Bookie(bookieConf);
 
@@ -551,7 +556,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         try {
             Bookie b = new Bookie(conf);
             fail("Shouldn't have been able to start");
@@ -576,7 +581,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[]{ledgerDir.getPath()})
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         try {
             Bookie b = new Bookie(conf);
             fail("Shouldn't have been able to start");
@@ -599,7 +604,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir)
             .setLedgerDirNames(ledgerDirs)
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         Bookie b = new Bookie(conf); // should work fine
         b.start();
         b.shutdown();
@@ -625,7 +630,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir)
             .setLedgerDirNames(ledgerDirs)
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         conf.setUseHostNameAsBookieID(false);
         Bookie b = new Bookie(conf); // should work fine
         b.start();
@@ -652,7 +657,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir).setLedgerDirNames(ledgerDirs)
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         conf.setUseHostNameAsBookieID(true);
         Bookie b = new Bookie(conf); // should work fine
         b.start();
@@ -682,7 +687,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         try {
             conf.setUseHostNameAsBookieID(true);
             new Bookie(conf);
@@ -705,7 +710,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir)
             .setLedgerDirNames(ledgerDirs)
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         Bookie b = new Bookie(conf); // should work fine
         b.start();
         b.shutdown();
@@ -737,7 +742,7 @@ public class CookieTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(journalDir)
             .setLedgerDirNames(ledgerDirs)
             .setBookiePort(bookiePort)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         Bookie b = new Bookie(conf); // should work fine
         b.start();
         b.shutdown();

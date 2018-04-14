@@ -21,12 +21,18 @@
 package org.apache.bookkeeper.bookie;
 
 import static com.google.common.base.Charsets.UTF_8;
+import static org.apache.bookkeeper.util.BookKeeperConstants.AVAILABLE_NODE;
 import static org.apache.bookkeeper.util.BookKeeperConstants.BOOKIE_STATUS_FILENAME;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -39,7 +45,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
+import java.util.concurrent.ExecutionException;
 import org.apache.bookkeeper.bookie.BookieException.DiskPartitionDuplicationException;
+import org.apache.bookkeeper.bookie.BookieException.MetadataStoreException;
 import org.apache.bookkeeper.bookie.LedgerDirsManager.NoWritableLedgerDirException;
 import org.apache.bookkeeper.client.BookKeeper;
 import org.apache.bookkeeper.client.BookKeeper.DigestType;
@@ -49,7 +57,9 @@ import org.apache.bookkeeper.conf.ClientConfiguration;
 import org.apache.bookkeeper.conf.ServerConfiguration;
 import org.apache.bookkeeper.conf.TestBKConfiguration;
 import org.apache.bookkeeper.discover.RegistrationManager;
-import org.apache.bookkeeper.discover.ZKRegistrationManager;
+import org.apache.bookkeeper.meta.MetadataBookieDriver;
+import org.apache.bookkeeper.meta.zk.ZKMetadataBookieDriver;
+import org.apache.bookkeeper.meta.zk.ZKMetadataDriverBase;
 import org.apache.bookkeeper.proto.BookieServer;
 import org.apache.bookkeeper.replication.ReplicationException.CompatibilityException;
 import org.apache.bookkeeper.replication.ReplicationException.UnavailableException;
@@ -61,12 +71,12 @@ import org.apache.bookkeeper.tls.SecurityException;
 import org.apache.bookkeeper.util.DiskChecker;
 import org.apache.bookkeeper.zookeeper.ZooKeeperClient;
 import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.data.Stat;
 import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestName;
+import org.powermock.reflect.Whitebox;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -79,40 +89,26 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
 
     @Rule
     public final TestName runtime = new TestName();
-    RegistrationManager rm;
+    ZKMetadataBookieDriver driver;
 
     public BookieInitializationTest() {
         super(0);
-        String ledgersPath = "/" + "ledgers" + runtime.getMethodName();
-        baseClientConf.setZkLedgersRootPath(ledgersPath);
-        baseConf.setZkLedgersRootPath(ledgersPath);
     }
 
     @Override
     public void setUp() throws Exception {
-        super.setUp();
-        zkUtil.createBKEnsemble("/" + runtime.getMethodName());
-        rm = new ZKRegistrationManager();
+        String ledgersPath = "/ledgers" + runtime.getMethodName();
+        super.setUp(ledgersPath);
+        zkUtil.createBKEnsemble(ledgersPath);
+        driver = new ZKMetadataBookieDriver();
     }
 
     @Override
     public void tearDown() throws Exception {
+        if (driver != null) {
+            driver.close();
+        }
         super.tearDown();
-        if (rm != null) {
-            rm.close();
-        }
-    }
-
-    private static class MockBookie extends Bookie {
-        MockBookie(ServerConfiguration conf) throws IOException,
-                KeeperException, InterruptedException, BookieException {
-            super(conf);
-        }
-
-        void testRegisterBookie(ServerConfiguration conf) throws IOException {
-            super.getStateManager().doRegisterBookie();
-        }
-
     }
 
     /**
@@ -126,18 +122,21 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(tmpDir.getPath())
             .setLedgerDirNames(new String[] { tmpDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(metadataServiceUri);
+
+        RegistrationManager rm = mock(RegistrationManager.class);
+        doThrow(new MetadataStoreException("mocked exception"))
+            .when(rm)
+            .registerBookie(anyString(), anyBoolean());
 
         // simulating ZooKeeper exception by assigning a closed zk client to bk
         BookieServer bkServer = new BookieServer(conf) {
             protected Bookie newBookie(ServerConfiguration conf)
                     throws IOException, KeeperException, InterruptedException,
                     BookieException {
-                MockBookie bookie = new MockBookie(conf);
-                rm.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
-                bookie.setRegistrationManager(rm);
-                ((ZKRegistrationManager) bookie.registrationManager).setZk(zkc);
-                ((ZKRegistrationManager) bookie.registrationManager).getZk().close();
+                Bookie bookie = new Bookie(conf);
+                MetadataBookieDriver driver = Whitebox.getInternalState(bookie, "metadataDriver");
+                ((ZKMetadataBookieDriver) driver).setRegManager(rm);
                 return bookie;
             }
         };
@@ -150,30 +149,25 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
 
     @Test
     public void testBookieRegistrationWithSameZooKeeperClient() throws Exception {
-        File tmpDir = createTempDir("bookie", "test");
-
         final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
-        conf.setJournalDirName(tmpDir.getPath())
-            .setLedgerDirNames(new String[] { tmpDir.getPath() })
-            .setZkServers(null);
+        conf.setMetadataServiceUri(metadataServiceUri)
+            .setListeningInterface(null);
 
-        final String bkRegPath = conf.getZkAvailableBookiesPath() + "/"
-                + InetAddress.getLocalHost().getHostAddress() + ":"
-                + conf.getBookiePort();
+        String bookieId = Bookie.getBookieAddress(conf).toString();
 
-        MockBookie b = new MockBookie(conf);
-        conf.setZkServers(zkUtil.getZooKeeperConnectString());
-        rm.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
-        b.setRegistrationManager(rm);
-        b.testRegisterBookie(conf);
-        ZooKeeper zooKeeper = ((ZKRegistrationManager) rm).getZk();
-        assertNotNull("Bookie registration node doesn't exists!",
-            zooKeeper.exists(bkRegPath, false));
+        driver.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
+        try (StateManager manager = new BookieStateManager(conf, driver)) {
+            manager.registerBookie(true).get();
+            assertTrue(
+                "Bookie registration node doesn't exists!",
+                driver.getRegistrationManager().isBookieRegistered(bookieId));
 
-        // test register bookie again if the registeration node is created by itself.
-        b.testRegisterBookie(conf);
-        assertNotNull("Bookie registration node doesn't exists!",
-            zooKeeper.exists(bkRegPath, false));
+            // test register bookie again if the registeration node is created by itself.
+            manager.registerBookie(true).get();
+            assertTrue(
+                "Bookie registration node doesn't exists!",
+                driver.getRegistrationManager().isBookieRegistered(bookieId));
+        }
     }
 
     /**
@@ -183,107 +177,95 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
      */
     @Test
     public void testBookieRegistration() throws Exception {
-        File tmpDir = createTempDir("bookie", "test");
-
         final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
-        conf.setJournalDirName(tmpDir.getPath())
-            .setLedgerDirNames(new String[] { tmpDir.getPath() })
-            .setZkServers(null);
+        conf.setMetadataServiceUri(metadataServiceUri)
+            .setListeningInterface(null);
 
-        final String bkRegPath = conf.getZkAvailableBookiesPath() + "/"
-                + InetAddress.getLocalHost().getHostAddress() + ":"
-                + conf.getBookiePort();
-        MockBookie b = new MockBookie(conf);
+        String bookieId = Bookie.getBookieAddress(conf).toString();
+        final String bkRegPath = ZKMetadataDriverBase.resolveZkLedgersRootPath(conf)
+            + "/" + AVAILABLE_NODE + "/" + bookieId;
 
-        conf.setZkServers(zkUtil.getZooKeeperConnectString());
-        rm.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
-        b.setRegistrationManager(rm);
-        b.testRegisterBookie(conf);
-
-        Stat bkRegNode1 = ((ZKRegistrationManager) rm).getZk().exists(bkRegPath, false);
-        assertNotNull("Bookie registration node doesn't exists!",
-                bkRegNode1);
+        driver.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
+        try (StateManager manager = new BookieStateManager(conf, driver)) {
+            manager.registerBookie(true).get();
+        }
+        Stat bkRegNode1 = zkc.exists(bkRegPath, false);
+        assertNotNull("Bookie registration has been failed", bkRegNode1);
 
         // simulating bookie restart, on restart bookie will create new
         // zkclient and doing the registration.
-        RegistrationManager newRm = new ZKRegistrationManager();
-        newRm.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
-        b.setRegistrationManager(newRm);
+        try (MetadataBookieDriver newDriver = new ZKMetadataBookieDriver()) {
+            newDriver.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
 
-        try (ZooKeeperClient newZk = createNewZKClient()) {
-            // deleting the znode, so that the bookie registration should
-            // continue successfully on NodeDeleted event
-            new Thread(() -> {
-                try {
-                    Thread.sleep(conf.getZkTimeout() / 3);
-                    zkc.delete(bkRegPath, -1);
-                } catch (Exception e) {
-                    // Not handling, since the testRegisterBookie will fail
-                    LOG.error("Failed to delete the znode :" + bkRegPath, e);
+            try (ZooKeeperClient newZk = createNewZKClient()) {
+                // deleting the znode, so that the bookie registration should
+                // continue successfully on NodeDeleted event
+                new Thread(() -> {
+                    try {
+                        Thread.sleep(conf.getZkTimeout() / 3);
+                        zkc.delete(bkRegPath, -1);
+                    } catch (Exception e) {
+                        // Not handling, since the testRegisterBookie will fail
+                        LOG.error("Failed to delete the znode :" + bkRegPath, e);
+                    }
+                }).start();
+                try (StateManager newMgr = new BookieStateManager(conf, newDriver)) {
+                    newMgr.registerBookie(true).get();
+                } catch (IOException e) {
+                    Throwable t = e.getCause();
+                    if (t instanceof KeeperException) {
+                        KeeperException ke = (KeeperException) t;
+                        assertTrue("ErrorCode:" + ke.code()
+                                + ", Registration node exists",
+                            ke.code() != KeeperException.Code.NODEEXISTS);
+                    }
+                    throw e;
                 }
-            }).start();
-            try {
-                b.testRegisterBookie(conf);
-            } catch (IOException e) {
-                Throwable t = e.getCause();
-                if (t instanceof KeeperException) {
-                    KeeperException ke = (KeeperException) t;
-                    assertTrue("ErrorCode:" + ke.code()
-                            + ", Registration node exists",
-                        ke.code() != KeeperException.Code.NODEEXISTS);
-                }
-                throw e;
+
+                // verify ephemeral owner of the bkReg znode
+                Stat bkRegNode2 = newZk.exists(bkRegPath, false);
+                assertNotNull("Bookie registration has been failed", bkRegNode2);
+                assertTrue("Bookie is referring to old registration znode:"
+                    + bkRegNode1 + ", New ZNode:" + bkRegNode2, bkRegNode1
+                    .getEphemeralOwner() != bkRegNode2.getEphemeralOwner());
             }
-
-            // verify ephemeral owner of the bkReg znode
-            Stat bkRegNode2 = newZk.exists(bkRegPath, false);
-            assertNotNull("Bookie registration has been failed", bkRegNode2);
-            assertTrue("Bookie is referring to old registration znode:"
-                + bkRegNode1 + ", New ZNode:" + bkRegNode2, bkRegNode1
-                .getEphemeralOwner() != bkRegNode2.getEphemeralOwner());
         }
     }
 
     @Test(timeout = 20000)
     public void testBookieRegistrationWithFQDNHostNameAsBookieID() throws Exception {
-        File tmpDir = createTempDir("bookie", "test");
+        final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration()
+            .setMetadataServiceUri(metadataServiceUri)
+            .setUseHostNameAsBookieID(true)
+            .setListeningInterface(null);
 
-        final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration().setZkServers(null)
-                .setJournalDirName(tmpDir.getPath()).setLedgerDirNames(new String[] { tmpDir.getPath() })
-                .setUseHostNameAsBookieID(true);
+        final String bookieId = InetAddress.getLocalHost().getCanonicalHostName() + ":" + conf.getBookiePort();
 
-        final String bkRegPath = conf.getZkAvailableBookiesPath() + "/"
-                + InetAddress.getLocalHost().getCanonicalHostName() + ":" + conf.getBookiePort();
-        conf.setZkServers(zkUtil.getZooKeeperConnectString());
-
-        MockBookie bWithFQDNHostname = new MockBookie(conf);
-        rm.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
-        bWithFQDNHostname.registrationManager = rm;
-
-        bWithFQDNHostname.testRegisterBookie(conf);
-        Stat bkRegNode1 = zkc.exists(bkRegPath, false);
-        Assert.assertNotNull("Bookie registration node doesn't exists!", bkRegNode1);
+        driver.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
+        try (StateManager manager = new BookieStateManager(conf, driver)) {
+            manager.registerBookie(true).get();
+            assertTrue("Bookie registration node doesn't exists!",
+                driver.getRegistrationManager().isBookieRegistered(bookieId));
+        }
     }
 
     @Test(timeout = 20000)
     public void testBookieRegistrationWithShortHostNameAsBookieID() throws Exception {
-        File tmpDir = createTempDir("bookie", "test");
+        final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration()
+            .setMetadataServiceUri(metadataServiceUri)
+            .setUseHostNameAsBookieID(true)
+            .setUseShortHostName(true)
+            .setListeningInterface(null);
 
-        final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration().setZkServers(null)
-                .setJournalDirName(tmpDir.getPath()).setLedgerDirNames(new String[] { tmpDir.getPath() })
-                .setUseHostNameAsBookieID(true).setUseShortHostName(true);
+        final String bookieId = InetAddress.getLocalHost().getCanonicalHostName().split("\\.", 2)[0]
+            + ":" + conf.getBookiePort();
 
-        final String bkRegPath = conf.getZkAvailableBookiesPath() + "/"
-                + (InetAddress.getLocalHost().getCanonicalHostName().split("\\.", 2)[0]) + ":" + conf.getBookiePort();
-        conf.setZkServers(zkUtil.getZooKeeperConnectString());
-
-        MockBookie bWithShortHostname = new MockBookie(conf);
-        rm.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
-        bWithShortHostname.registrationManager = rm;
-
-        bWithShortHostname.testRegisterBookie(conf);
-        Stat bkRegNode1 = zkc.exists(bkRegPath, false);
-        Assert.assertNotNull("Bookie registration node doesn't exists!", bkRegNode1);
+        driver.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
+        try (StateManager manager = new BookieStateManager(conf, driver)) {
+            manager.registerBookie(true).get();
+            assertTrue("Bookie registration node doesn't exists!",
+                driver.getRegistrationManager().isBookieRegistered(bookieId));
+        }
     }
 
     /**
@@ -293,61 +275,56 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
      */
     @Test
     public void testRegNodeExistsAfterSessionTimeOut() throws Exception {
-        File tmpDir = createTempDir("bookie", "test");
+        final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration()
+            .setMetadataServiceUri(metadataServiceUri)
+            .setListeningInterface(null);
 
-        final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
-        conf.setJournalDirName(tmpDir.getPath())
-            .setLedgerDirNames(new String[] { tmpDir.getPath() })
-            .setZkServers(zkUtil.getZooKeeperConnectString());
-
-        String bkRegPath = conf.getZkAvailableBookiesPath() + "/"
-                + InetAddress.getLocalHost().getHostAddress() + ":"
+        String bookieId = InetAddress.getLocalHost().getHostAddress() + ":"
                 + conf.getBookiePort();
+        String bkRegPath = ZKMetadataDriverBase.resolveZkLedgersRootPath(conf) + "/" + AVAILABLE_NODE + "/" + bookieId;
 
-        MockBookie b = new MockBookie(conf);
-
-        rm.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
-        b.setRegistrationManager(rm);
-        b.testRegisterBookie(conf);
+        driver.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
+        try (StateManager manager = new BookieStateManager(conf, driver)) {
+            manager.registerBookie(true).get();
+            assertTrue("Bookie registration node doesn't exists!",
+                driver.getRegistrationManager().isBookieRegistered(bookieId));
+        }
         Stat bkRegNode1 = zkc.exists(bkRegPath, false);
-        assertNotNull("Bookie registration node doesn't exists!",
-                bkRegNode1);
+        assertNotNull("Bookie registration has been failed",
+            bkRegNode1);
 
         // simulating bookie restart, on restart bookie will create new
         // zkclient and doing the registration.
-        ZooKeeperClient newzk = createNewZKClient();
-        RegistrationManager newRm = new ZKRegistrationManager();
-        newRm.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
-        b.setRegistrationManager(newRm);
-        try {
-            b.testRegisterBookie(conf);
-            fail("Should throw NodeExistsException as the znode is not getting expired");
-        } catch (IOException e) {
-            Throwable t1 = e.getCause(); // BookieException.MetadataStoreException
-            Throwable t2 = t1.getCause(); // IOException
-            Throwable t3 = t2.getCause(); // KeeperException.NodeExistsException
+        try (MetadataBookieDriver newDriver = new ZKMetadataBookieDriver()) {
+            newDriver.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
+            try (StateManager newMgr = new BookieStateManager(conf, newDriver)) {
+                newMgr.registerBookie(true).get();
+                fail("Should throw NodeExistsException as the znode is not getting expired");
+            } catch (ExecutionException ee) {
+                Throwable e = ee.getCause(); // IOException
+                Throwable t1 = e.getCause(); // BookieException.MetadataStoreException
+                Throwable t2 = t1.getCause(); // IOException
+                Throwable t3 = t2.getCause(); // KeeperException.NodeExistsException
 
-            if (t3 instanceof KeeperException) {
-                KeeperException ke = (KeeperException) t3;
-                assertTrue("ErrorCode:" + ke.code()
-                        + ", Registration node doesn't exists",
+                if (t3 instanceof KeeperException) {
+                    KeeperException ke = (KeeperException) t3;
+                    assertTrue("ErrorCode:" + ke.code()
+                            + ", Registration node doesn't exists",
                         ke.code() == KeeperException.Code.NODEEXISTS);
 
-                // verify ephemeral owner of the bkReg znode
-                Stat bkRegNode2 = newzk.exists(bkRegPath, false);
-                assertNotNull("Bookie registration has been failed",
+                    // verify ephemeral owner of the bkReg znode
+                    Stat bkRegNode2 = zkc.exists(bkRegPath, false);
+                    assertNotNull("Bookie registration has been failed",
                         bkRegNode2);
-                assertTrue(
+                    assertTrue(
                         "Bookie wrongly registered. Old registration znode:"
-                                + bkRegNode1 + ", New znode:" + bkRegNode2,
+                            + bkRegNode1 + ", New znode:" + bkRegNode2,
                         bkRegNode1.getEphemeralOwner() == bkRegNode2
-                                .getEphemeralOwner());
-                return;
+                            .getEphemeralOwner());
+                    return;
+                }
+                throw ee;
             }
-            throw e;
-        } finally {
-            newzk.close();
-            newRm.close();
         }
     }
 
@@ -361,8 +338,10 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
 
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         int port = PortManager.nextFreePort();
-        conf.setZkServers(null).setBookiePort(port).setJournalDirName(tmpDir.getPath())
-                .setLedgerDirNames(new String[] { tmpDir.getPath() });
+        conf.setMetadataServiceUri(null)
+            .setBookiePort(port)
+            .setJournalDirName(tmpDir.getPath())
+            .setLedgerDirNames(new String[] { tmpDir.getPath() });
         String userString = "larry, curly,moe,,";
         conf.setPermittedStartupUsers(userString);
         BookieServer bs1 = null;
@@ -391,8 +370,10 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
 
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         int port = PortManager.nextFreePort();
-        conf.setZkServers(null).setBookiePort(port).setJournalDirName(tmpDir.getPath())
-                .setLedgerDirNames(new String[] { tmpDir.getPath() });
+        conf.setMetadataServiceUri(null)
+            .setBookiePort(port)
+            .setJournalDirName(tmpDir.getPath())
+            .setLedgerDirNames(new String[] { tmpDir.getPath() });
 
         BookieServer bs1 = null;
 
@@ -434,9 +415,13 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         File tmpDir = createTempDir("bookie", "test");
 
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
+        LOG.info("{}", conf);
+
         int port = PortManager.nextFreePort();
-        conf.setZkServers(null).setBookiePort(port).setJournalDirName(tmpDir.getPath())
-                .setLedgerDirNames(new String[] { tmpDir.getPath() });
+        conf.setMetadataServiceUri(null)
+            .setBookiePort(port)
+            .setJournalDirName(tmpDir.getPath())
+            .setLedgerDirNames(new String[] { tmpDir.getPath() });
         BookieServer bs1 = null;
         try {
             bs1 = new BookieServer(conf);
@@ -463,19 +448,13 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         conf.setBookiePort(port)
             .setJournalDirName(tmpDir.getPath())
             .setLedgerDirNames(new String[] { tmpDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(metadataServiceUri);
         BookieServer bs1 = new BookieServer(conf);
-        conf.setZkServers(zkUtil.getZooKeeperConnectString());
-        rm.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
-        bs1.getBookie().setRegistrationManager(rm);
         bs1.start();
         BookieServer bs2 = null;
         // starting bk server with same conf
         try {
             bs2 = new BookieServer(conf);
-            RegistrationManager newRm = new ZKRegistrationManager();
-            newRm.initialize(conf, () -> {}, NullStatsLogger.INSTANCE);
-            bs2.getBookie().registrationManager = newRm;
             bs2.start();
             fail("Should throw BindException, as the bk server is already running!");
         } catch (BindException e) {
@@ -504,12 +483,9 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
             .setJournalDirName(tmpDir1.getPath())
             .setLedgerDirNames(
                 new String[] { tmpDir1.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
         assertEquals(0, conf1.getBookiePort());
         BookieServer bs1 = new BookieServer(conf1);
-        conf1.setZkServers(zkUtil.getZooKeeperConnectString());
-        rm.initialize(conf1, () -> {}, NullStatsLogger.INSTANCE);
-        bs1.getBookie().registrationManager = rm;
         bs1.start();
         assertFalse(0 == conf1.getBookiePort());
 
@@ -519,11 +495,8 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
             .setJournalDirName(tmpDir2.getPath())
             .setLedgerDirNames(
                 new String[] { tmpDir2.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
         BookieServer bs2 = new BookieServer(conf2);
-        RegistrationManager newRm = new ZKRegistrationManager();
-        newRm.initialize(conf2, () -> {}, NullStatsLogger.INSTANCE);
-        bs2.getBookie().registrationManager = newRm;
         bs2.start();
         assertFalse(0 == conf2.getBookiePort());
 
@@ -543,7 +516,7 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration()
                 .setJournalDirName(tmpDir.getPath())
                 .setLedgerDirNames(new String[] { tmpDir.getPath() });
-        conf.setZkServers(zkUtil.getZooKeeperConnectString()).setZkTimeout(5000);
+        conf.setMetadataServiceUri(zkUtil.getMetadataServiceUri()).setZkTimeout(5000);
 
         try {
             new Bookie(conf);
@@ -564,10 +537,9 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
 
         final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration()
             .setJournalDirName(tmpDir.getPath())
-            .setLedgerDirNames(new String[] { tmpDir.getPath() });
-        conf.setZkServers(zkUtil.getZooKeeperConnectString())
+            .setLedgerDirNames(new String[] { tmpDir.getPath() })
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri(zkRoot))
             .setZkTimeout(5000);
-        conf.setZkLedgersRootPath(zkRoot);
         try {
             new Bookie(conf);
             fail("Should throw NoNodeException");
@@ -575,8 +547,7 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
             // shouldn't be able to start
         }
         ServerConfiguration adminConf = new ServerConfiguration();
-        adminConf.setZkServers(zkUtil.getZooKeeperConnectString());
-        adminConf.setZkLedgersRootPath(zkRoot);
+        adminConf.setMetadataServiceUri(zkUtil.getMetadataServiceUri(zkRoot));
         BookKeeperAdmin.format(adminConf, false, false);
 
         Bookie b = new Bookie(conf);
@@ -592,18 +563,19 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         long usableSpace = tmpDir.getUsableSpace();
         long totalSpace = tmpDir.getTotalSpace();
         final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration()
+                .setLedgerStorageClass(InterleavedLedgerStorage.class.getName())
                 .setJournalDirName(tmpDir.getPath())
                 .setLedgerDirNames(new String[] { tmpDir.getPath() })
                 .setDiskCheckInterval(1000)
                 .setDiskUsageThreshold((1.0f - ((float) usableSpace / (float) totalSpace)) * 0.999f)
-                .setDiskUsageWarnThreshold(0.0f);
-        conf.setZkServers(zkUtil.getZooKeeperConnectString())
-            .setZkTimeout(5000);
+                .setDiskUsageWarnThreshold(0.0f)
+                .setMetadataServiceUri(metadataServiceUri)
+                .setZkTimeout(5000);
 
         // if isForceGCAllowWhenNoSpace or readOnlyModeEnabled is not set and Bookie is
         // started when Disk is full, then it will fail to start with NoWritableLedgerDirException
 
-        conf.setIsForceGCAllowWhenNoSpace(false)
+        conf.setMinUsableSizeForEntryLogCreation(Long.MAX_VALUE)
             .setReadOnlyModeEnabled(false);
         try {
             new Bookie(conf);
@@ -612,7 +584,7 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
             // expected
         }
 
-        conf.setIsForceGCAllowWhenNoSpace(true)
+        conf.setMinUsableSizeForEntryLogCreation(Long.MIN_VALUE)
             .setReadOnlyModeEnabled(false);
         try {
             new Bookie(conf);
@@ -621,13 +593,19 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
             // expected
         }
 
-        conf.setIsForceGCAllowWhenNoSpace(false)
+        conf.setMinUsableSizeForEntryLogCreation(Long.MAX_VALUE)
             .setReadOnlyModeEnabled(true);
+        Bookie bookie = null;
         try {
-            new Bookie(conf);
-            fail("NoWritableLedgerDirException expected");
+            // bookie is okay to start up when readonly mode is enabled because entry log file creation
+            // is deferred.
+            bookie = new Bookie(conf);
         } catch (NoWritableLedgerDirException e) {
-            // expected
+            fail("NoWritableLedgerDirException unexpected");
+        } finally {
+            if (null != bookie) {
+                bookie.shutdown();
+            }
         }
     }
 
@@ -644,9 +622,9 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
                 .setLedgerDirNames(new String[] { tmpDir.getPath() })
                 .setDiskCheckInterval(1000)
                 .setDiskUsageThreshold((1.0f - ((float) usableSpace / (float) totalSpace)) * 0.999f)
-                .setDiskUsageWarnThreshold(0.0f);
-        conf.setZkServers(zkUtil.getZooKeeperConnectString())
-            .setZkTimeout(5000);
+                .setDiskUsageWarnThreshold(0.0f)
+                .setMetadataServiceUri(metadataServiceUri)
+                .setZkTimeout(5000);
 
         // if isForceGCAllowWhenNoSpace and readOnlyModeEnabled are set, then Bookie should
         // start with readonlymode when Disk is full (assuming there is no need for creation of index file
@@ -698,16 +676,18 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
     public void testWithDiskFullAndAbilityToCreateNewIndexFile() throws Exception {
         File tmpDir = createTempDir("DiskCheck", "test");
 
-        final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration()
-                .setJournalDirName(tmpDir.getPath())
-                .setLedgerDirNames(new String[] { tmpDir.getPath() }).setDiskCheckInterval(1000)
-                .setLedgerStorageClass(SortedLedgerStorage.class.getName()).setAutoRecoveryDaemonEnabled(false);
-        conf.setZkServers(zkUtil.getZooKeeperConnectString()).setZkTimeout(5000);
+        final ServerConfiguration conf = newServerConfiguration()
+            .setJournalDirName(tmpDir.getPath())
+            .setLedgerDirNames(new String[] { tmpDir.getPath() })
+            .setDiskCheckInterval(1000)
+            .setLedgerStorageClass(SortedLedgerStorage.class.getName())
+            .setAutoRecoveryDaemonEnabled(false)
+            .setZkTimeout(5000);
 
         BookieServer server = new MockBookieServer(conf);
         server.start();
         ClientConfiguration clientConf = new ClientConfiguration();
-        clientConf.setZkServers(zkUtil.getZooKeeperConnectString());
+        clientConf.setMetadataServiceUri(metadataServiceUri);
         BookKeeper bkClient = new BookKeeper(clientConf);
         LedgerHandle lh = bkClient.createLedger(1, 1, 1, DigestType.CRC32, "passwd".getBytes());
         long entryId = -1;
@@ -762,7 +742,7 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         final ServerConfiguration conf = TestBKConfiguration.newServerConfiguration()
                 .setJournalDirName(child.getPath())
                 .setLedgerDirNames(new String[] { child.getPath() });
-        conf.setZkServers(zkUtil.getZooKeeperConnectString())
+        conf.setMetadataServiceUri(metadataServiceUri)
             .setZkTimeout(5000);
         try {
             // LedgerDirsManager#init() is used in Bookie instantiation.
@@ -790,12 +770,13 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         int port = PortManager.nextFreePort();
         // multiple ledgerdirs in same diskpartition
-        conf.setZkServers(zkUtil.getZooKeeperConnectString()).setZkTimeout(5000);
-        conf.setBookiePort(port)
-        .setJournalDirName(tmpDir1.getPath())
-        .setLedgerDirNames(new String[] { tmpDir1.getPath(), tmpDir2.getPath() })
-        .setIndexDirName(new String[] { tmpDir1.getPath() });
-        conf.setAllowMultipleDirsUnderSameDiskPartition(false);
+        conf.setMetadataServiceUri(metadataServiceUri)
+            .setZkTimeout(5000)
+            .setBookiePort(port)
+            .setJournalDirName(tmpDir1.getPath())
+            .setLedgerDirNames(new String[] { tmpDir1.getPath(), tmpDir2.getPath() })
+            .setIndexDirName(new String[] { tmpDir1.getPath() })
+            .setAllowMultipleDirsUnderSameDiskPartition(false);
         BookieServer bs1 = null;
         try {
             bs1 = new BookieServer(conf);
@@ -812,12 +793,13 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         tmpDir2 = createTempDir("bookie", "test");
         port = PortManager.nextFreePort();
         // multiple indexdirs in same diskpartition
-        conf.setZkServers(zkUtil.getZooKeeperConnectString()).setZkTimeout(5000);
-        conf.setBookiePort(port)
+        conf.setMetadataServiceUri(metadataServiceUri)
+            .setZkTimeout(5000)
+            .setBookiePort(port)
             .setJournalDirName(tmpDir1.getPath())
             .setLedgerDirNames(new String[] { tmpDir1.getPath() })
-            .setIndexDirName(new String[] { tmpDir1.getPath(), tmpDir2.getPath() });
-        conf.setAllowMultipleDirsUnderSameDiskPartition(false);
+            .setIndexDirName(new String[] { tmpDir1.getPath(), tmpDir2.getPath() })
+            .setAllowMultipleDirsUnderSameDiskPartition(false);
         bs1 = null;
         try {
             bs1 = new BookieServer(conf);
@@ -834,12 +816,13 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         tmpDir2 = createTempDir("bookie", "test");
         port = PortManager.nextFreePort();
         // multiple journaldirs in same diskpartition
-        conf.setZkServers(zkUtil.getZooKeeperConnectString()).setZkTimeout(5000);
-        conf.setBookiePort(port)
+        conf.setMetadataServiceUri(metadataServiceUri)
+            .setZkTimeout(5000)
+            .setBookiePort(port)
             .setJournalDirsName(new String[] { tmpDir1.getPath(), tmpDir2.getPath() })
             .setLedgerDirNames(new String[] { tmpDir1.getPath() })
-            .setIndexDirName(new String[] { tmpDir1.getPath()});
-        conf.setAllowMultipleDirsUnderSameDiskPartition(false);
+            .setIndexDirName(new String[] { tmpDir1.getPath()})
+            .setAllowMultipleDirsUnderSameDiskPartition(false);
         bs1 = null;
         try {
             bs1 = new BookieServer(conf);
@@ -868,8 +851,9 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
 
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         int port = 12555;
-        conf.setZkServers(zkUtil.getZooKeeperConnectString()).setZkTimeout(5000);
-        conf.setBookiePort(port)
+        conf.setMetadataServiceUri(metadataServiceUri)
+            .setZkTimeout(5000)
+            .setBookiePort(port)
             .setJournalDirsName(new String[] { tmpDir1.getPath(), tmpDir2.getPath() })
             .setLedgerDirNames(new String[] { tmpDir3.getPath(), tmpDir4.getPath() })
             .setIndexDirName(new String[] { tmpDir5.getPath(), tmpDir6.getPath() });
@@ -905,7 +889,8 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(tmpDir.getPath())
             .setLedgerDirNames(new String[] { tmpDir.getPath() })
             .setReadOnlyModeEnabled(true)
-            .setPersistBookieStatusEnabled(true).setZkServers(zkUtil.getZooKeeperConnectString());
+            .setPersistBookieStatusEnabled(true)
+            .setMetadataServiceUri(metadataServiceUri);
         BookieServer bookieServer = new BookieServer(conf);
         bookieServer.start();
         Bookie bookie = bookieServer.getBookie();
@@ -941,7 +926,8 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
         conf.setJournalDirName(tmpDir.getPath())
             .setLedgerDirNames(new String[] { tmpDir.getPath() })
             .setReadOnlyModeEnabled(true)
-            .setPersistBookieStatusEnabled(true).setZkServers(zkUtil.getZooKeeperConnectString());
+            .setPersistBookieStatusEnabled(true)
+            .setMetadataServiceUri(metadataServiceUri);
         // start new bookie
         BookieServer bookieServer = new BookieServer(conf);
         bookieServer.start();
@@ -982,7 +968,7 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
             .setLedgerDirNames(filePath)
             .setReadOnlyModeEnabled(true)
             .setPersistBookieStatusEnabled(true)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(metadataServiceUri);
         // start a new bookie
         BookieServer bookieServer = new BookieServer(conf);
         bookieServer.start();
@@ -1021,7 +1007,7 @@ public class BookieInitializationTest extends BookKeeperClusterTestCase {
             .setLedgerDirNames(filePath)
             .setReadOnlyModeEnabled(true)
             .setPersistBookieStatusEnabled(true)
-            .setZkServers(zkUtil.getZooKeeperConnectString());
+            .setMetadataServiceUri(metadataServiceUri);
         // start a new bookie
         BookieServer bookieServer = new BookieServer(conf);
         bookieServer.start();

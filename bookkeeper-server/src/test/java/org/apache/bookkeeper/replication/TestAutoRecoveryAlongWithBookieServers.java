@@ -23,7 +23,6 @@ package org.apache.bookkeeper.replication;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.Map.Entry;
@@ -32,9 +31,11 @@ import org.apache.bookkeeper.client.BookKeeper;
 import org.apache.bookkeeper.client.LedgerEntry;
 import org.apache.bookkeeper.client.LedgerHandle;
 import org.apache.bookkeeper.client.LedgerHandleAdapter;
+import org.apache.bookkeeper.meta.zk.ZKMetadataDriverBase;
 import org.apache.bookkeeper.net.BookieSocketAddress;
 import org.apache.bookkeeper.test.BookKeeperClusterTestCase;
 import org.apache.bookkeeper.util.BookKeeperConstants;
+import org.junit.Before;
 import org.junit.Test;
 
 /**
@@ -48,9 +49,17 @@ public class TestAutoRecoveryAlongWithBookieServers extends
     public TestAutoRecoveryAlongWithBookieServers() {
         super(3);
         setAutoRecoveryEnabled(true);
-        basePath = baseClientConf.getZkLedgersRootPath() + '/'
-                + BookKeeperConstants.UNDER_REPLICATION_NODE
-                + BookKeeperConstants.DEFAULT_ZK_LEDGERS_ROOT_PATH;
+
+    }
+
+    @Before
+    @Override
+    public void setUp() throws Exception {
+        super.setUp();
+
+        basePath = ZKMetadataDriverBase.resolveZkLedgersRootPath(baseClientConf) + '/'
+            + BookKeeperConstants.UNDER_REPLICATION_NODE
+            + BookKeeperConstants.DEFAULT_ZK_LEDGERS_ROOT_PATH;
     }
 
     /**
@@ -71,9 +80,7 @@ public class TestAutoRecoveryAlongWithBookieServers extends
 
         killBookie(replicaToKill);
 
-        int startNewBookie = startNewBookie();
-        BookieSocketAddress newBkAddr = new BookieSocketAddress(InetAddress
-                .getLocalHost().getHostAddress(), startNewBookie);
+        BookieSocketAddress newBkAddr = startNewBookieAndReturnAddress();
 
         while (ReplicationTestUtil.isLedgerInUnderReplication(zkc, lh.getId(),
                 basePath)) {

@@ -21,6 +21,9 @@
 
 package org.apache.bookkeeper.test;
 
+import static org.apache.bookkeeper.util.BookKeeperConstants.AVAILABLE_NODE;
+import static org.junit.Assert.assertTrue;
+
 import com.google.common.base.Stopwatch;
 import java.io.File;
 import java.io.IOException;
@@ -32,6 +35,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.bookkeeper.bookie.Bookie;
@@ -41,6 +45,7 @@ import org.apache.bookkeeper.conf.AbstractConfiguration;
 import org.apache.bookkeeper.conf.ClientConfiguration;
 import org.apache.bookkeeper.conf.ServerConfiguration;
 import org.apache.bookkeeper.conf.TestBKConfiguration;
+import org.apache.bookkeeper.meta.zk.ZKMetadataDriverBase;
 import org.apache.bookkeeper.metastore.InMemoryMetaStore;
 import org.apache.bookkeeper.net.BookieSocketAddress;
 import org.apache.bookkeeper.proto.BookieServer;
@@ -73,9 +78,10 @@ public abstract class BookKeeperClusterTestCase {
     @Rule
     public final Timeout globalTimeout;
 
-    // ZooKeeper related variables
+    // Metadata service related variables
     protected final ZooKeeperUtil zkUtil = new ZooKeeperUtil();
     protected ZooKeeper zkc;
+    protected String metadataServiceUri;
 
     // BookKeeper related variables
     protected final List<File> tmpDirs = new LinkedList<File>();
@@ -85,12 +91,27 @@ public abstract class BookKeeperClusterTestCase {
     protected int numBookies;
     protected BookKeeperTestClient bkc;
 
+    /*
+     * Loopback interface is set as the listening interface and allowloopback is
+     * set to true in this server config. So bookies in this test process would
+     * bind to loopback address.
+     */
     protected final ServerConfiguration baseConf = TestBKConfiguration.newServerConfiguration();
     protected final ClientConfiguration baseClientConf = new ClientConfiguration();
 
     private final Map<BookieServer, AutoRecoveryMain> autoRecoveryProcesses = new HashMap<>();
 
     private boolean isAutoRecoveryEnabled;
+
+    SynchronousQueue<Throwable> asyncExceptions = new SynchronousQueue<>();
+    protected void captureThrowable(Runnable c) {
+        try {
+            c.run();
+        } catch (Throwable e) {
+            LOG.error("Captured error: {}", e);
+            asyncExceptions.add(e);
+        }
+    }
 
     public BookKeeperClusterTestCase(int numBookies) {
         this(numBookies, 120);
@@ -99,11 +120,14 @@ public abstract class BookKeeperClusterTestCase {
     public BookKeeperClusterTestCase(int numBookies, int testTimeoutSecs) {
         this.numBookies = numBookies;
         this.globalTimeout = Timeout.seconds(testTimeoutSecs);
-        baseConf.setAllowLoopback(true);
     }
 
     @Before
     public void setUp() throws Exception {
+        setUp("/ledgers");
+    }
+
+    protected void setUp(String ledgersRootPath) throws Exception {
         LOG.info("Setting up test {}", getClass());
         InMemoryMetaStore.reset();
         setMetastoreImplClass(baseConf);
@@ -114,16 +138,28 @@ public abstract class BookKeeperClusterTestCase {
             // start zookeeper service
             startZKCluster();
             // start bookkeeper service
-            startBKCluster();
-            LOG.info("Setup testcase {} in {} ms.", runtime.getMethodName(), sw.elapsed(TimeUnit.MILLISECONDS));
+            this.metadataServiceUri = getMetadataServiceUri(ledgersRootPath);
+            startBKCluster(metadataServiceUri);
+            LOG.info("Setup testcase {} @ metadata service {} in {} ms.",
+                runtime.getMethodName(), metadataServiceUri,  sw.elapsed(TimeUnit.MILLISECONDS));
         } catch (Exception e) {
             LOG.error("Error setting up", e);
             throw e;
         }
     }
 
+    protected String getMetadataServiceUri(String ledgersRootPath) {
+        return zkUtil.getMetadataServiceUri(ledgersRootPath);
+    }
+
     @After
     public void tearDown() throws Exception {
+        boolean failed = false;
+        for (Throwable e : asyncExceptions) {
+            LOG.error("Got async exception: {}", e);
+            failed = true;
+        }
+        assertTrue("Async failure", !failed);
         Stopwatch sw = Stopwatch.createStarted();
         LOG.info("TearDown");
         Exception tearDownException = null;
@@ -185,8 +221,9 @@ public abstract class BookKeeperClusterTestCase {
      *
      * @throws Exception
      */
-    protected void startBKCluster() throws Exception {
-        baseClientConf.setZkServers(zkUtil.getZooKeeperConnectString());
+    protected void startBKCluster(String metadataServiceUri) throws Exception {
+        baseConf.setMetadataServiceUri(metadataServiceUri);
+        baseClientConf.setMetadataServiceUri(metadataServiceUri);
         if (numBookies > 0) {
             bkc = new BookKeeperTestClient(baseClientConf, new TestStatsProvider());
         }
@@ -236,19 +273,16 @@ public abstract class BookKeeperClusterTestCase {
         } else {
             port = 0;
         }
-        return newServerConfiguration(port, zkUtil.getZooKeeperConnectString(),
-                                      f, new File[] { f });
+        return newServerConfiguration(port, f, new File[] { f });
     }
 
     protected ClientConfiguration newClientConfiguration() {
         return new ClientConfiguration(baseConf);
     }
 
-    protected ServerConfiguration newServerConfiguration(int port, String zkServers, File journalDir,
-            File[] ledgerDirs) {
+    protected ServerConfiguration newServerConfiguration(int port, File journalDir, File[] ledgerDirs) {
         ServerConfiguration conf = new ServerConfiguration(baseConf);
         conf.setBookiePort(port);
-        conf.setZkServers(zkServers);
         conf.setJournalDirName(journalDir.getPath());
         String[] ledgerDirNames = new String[ledgerDirs.length];
         for (int i = 0; i < ledgerDirs.length; i++) {
@@ -275,6 +309,10 @@ public abstract class BookKeeperClusterTestCase {
         for (ServerConfiguration conf : bsConfs) {
             bs.add(startBookie(conf));
         }
+    }
+
+    protected String newMetadataServiceUri(String ledgersRootPath) {
+        return zkUtil.getMetadataServiceUri(ledgersRootPath);
     }
 
     /**
@@ -385,7 +423,7 @@ public abstract class BookKeeperClusterTestCase {
         }
         BookieServer server = bs.get(index);
         ServerConfiguration ret = killBookie(index);
-        while (zkc.exists(baseConf.getZkAvailableBookiesPath() + "/"
+        while (zkc.exists(ZKMetadataDriverBase.resolveZkLedgersRootPath(baseConf) + "/" + AVAILABLE_NODE + "/"
                 + server.getLocalAddress().toString(), false) != null) {
             Thread.sleep(500);
         }
@@ -561,12 +599,18 @@ public abstract class BookKeeperClusterTestCase {
      */
     public int startNewBookie()
             throws Exception {
+        return startNewBookieAndReturnAddress().getPort();
+    }
+
+    public BookieSocketAddress startNewBookieAndReturnAddress()
+            throws Exception {
         ServerConfiguration conf = newServerConfiguration();
         bsConfs.add(conf);
         LOG.info("Starting new bookie on port: {}", conf.getBookiePort());
-        bs.add(startBookie(conf));
+        BookieServer server = startBookie(conf);
+        bs.add(server);
 
-        return conf.getBookiePort();
+        return server.getLocalAddress();
     }
 
     /**
@@ -764,4 +808,5 @@ public abstract class BookKeeperClusterTestCase {
     public TestStatsProvider getStatsProvider(int index) throws Exception {
         return getStatsProvider(bs.get(index).getLocalAddress());
     }
+
 }

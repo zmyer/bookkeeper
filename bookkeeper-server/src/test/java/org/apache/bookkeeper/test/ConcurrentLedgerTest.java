@@ -84,7 +84,7 @@ public class ConcurrentLedgerTest {
         ledgerDir.mkdirs();
 
         conf.setBookiePort(5000);
-        conf.setZkServers(null);
+        conf.setMetadataServiceUri(null);
         conf.setJournalDirName(txnDir.getPath());
         conf.setLedgerDirNames(new String[] { ledgerDir.getPath() });
         bookie = new Bookie(conf);
@@ -187,7 +187,7 @@ public class ConcurrentLedgerTest {
                 bytes.position(0);
                 bytes.limit(bytes.capacity());
                 throttle.acquire();
-                bookie.addEntry(Unpooled.wrappedBuffer(bytes), cb, counter, zeros);
+                bookie.addEntry(Unpooled.wrappedBuffer(bytes), false, cb, counter, zeros);
             }
         }
         long finish = System.currentTimeMillis();

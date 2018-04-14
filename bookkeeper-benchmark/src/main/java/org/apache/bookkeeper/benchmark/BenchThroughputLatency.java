@@ -20,6 +20,7 @@
 package org.apache.bookkeeper.benchmark;
 
 import static com.google.common.base.Charsets.UTF_8;
+import static org.apache.bookkeeper.util.BookKeeperConstants.AVAILABLE_NODE;
 
 import java.io.BufferedOutputStream;
 import java.io.FileOutputStream;
@@ -38,6 +39,7 @@ import org.apache.bookkeeper.client.BKException;
 import org.apache.bookkeeper.client.BookKeeper;
 import org.apache.bookkeeper.client.LedgerHandle;
 import org.apache.bookkeeper.conf.ClientConfiguration;
+import org.apache.bookkeeper.meta.zk.ZKMetadataDriverBase;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.HelpFormatter;
@@ -147,6 +149,7 @@ public class BenchThroughputLatency implements AddCallback, Runnable {
                         }
                     } catch (InterruptedException ie) {
                         LOG.info("Caught interrupted exception, going away");
+                        Thread.currentThread().interrupt();
                     }
                 }
             };
@@ -162,6 +165,7 @@ public class BenchThroughputLatency implements AddCallback, Runnable {
                     LOG.info("Time to send first batch: {}s {}ns ", time / 1000 / 1000 / 1000, time);
                 }
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 break;
             }
 
@@ -188,6 +192,7 @@ public class BenchThroughputLatency implements AddCallback, Runnable {
             }
         } catch (InterruptedException e) {
             LOG.error("Interrupted while waiting", e);
+            Thread.currentThread().interrupt();
         }
         synchronized (this) {
             duration = System.currentTimeMillis() - start;
@@ -198,7 +203,7 @@ public class BenchThroughputLatency implements AddCallback, Runnable {
         try {
             reporter.join();
         } catch (InterruptedException ie) {
-            // ignore
+            Thread.currentThread().interrupt();
         }
         LOG.info("Finished processing in ms: " + getDuration() + " tp = " + throughput);
     }
@@ -421,15 +426,20 @@ public class BenchThroughputLatency implements AddCallback, Runnable {
         return ((double) total / (double) count) / 1000000.0;
     }
 
+    /**
+     * The benchmark is assuming zookeeper based metadata service.
+     *
+     * <p>TODO: update benchmark to use metadata service uri {@link https://github.com/apache/bookkeeper/issues/1331}
+     */
     private static long warmUp(byte[] data, int ledgers, int ensemble, int qSize,
                                byte[] passwd, ClientConfiguration conf)
             throws KeeperException, IOException, InterruptedException, BKException {
         final CountDownLatch connectLatch = new CountDownLatch(1);
         final int bookies;
-        String bookieRegistrationPath = conf.getZkAvailableBookiesPath();
+        String bookieRegistrationPath = ZKMetadataDriverBase.resolveZkLedgersRootPath(conf) + "/" + AVAILABLE_NODE;
         ZooKeeper zk = null;
         try {
-            final String servers = conf.getZkServers();
+            final String servers = ZKMetadataDriverBase.resolveZkServers(conf);
             zk = new ZooKeeper(servers, 15000, new Watcher() {
                     @Override
                     public void process(WatchedEvent event) {

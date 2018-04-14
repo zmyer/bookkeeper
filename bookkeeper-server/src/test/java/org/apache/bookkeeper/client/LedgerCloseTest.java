@@ -71,7 +71,7 @@ public class LedgerCloseTest extends BookKeeperClusterTestCase {
     @Test
     public void testLedgerCloseWithConsistentLength() throws Exception {
         ClientConfiguration conf = new ClientConfiguration();
-        conf.setZkServers(zkUtil.getZooKeeperConnectString());
+        conf.setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         conf.setReadTimeout(1);
 
         BookKeeper bkc = new BookKeeper(conf);
@@ -91,7 +91,7 @@ public class LedgerCloseTest extends BookKeeperClusterTestCase {
         assertEquals(i.get(), BKException.Code.NotEnoughBookiesException);
         assertEquals(0, lh.getLength());
         assertEquals(LedgerHandle.INVALID_ENTRY_ID, lh.getLastAddConfirmed());
-        startBKCluster();
+        startBKCluster(zkUtil.getMetadataServiceUri());
         LedgerHandle newLh = bkc.openLedger(lh.getId(), DigestType.CRC32, new byte[] {});
         assertEquals(0, newLh.getLength());
         assertEquals(LedgerHandle.INVALID_ENTRY_ID, newLh.getLastAddConfirmed());
@@ -168,6 +168,7 @@ public class LedgerCloseTest extends BookKeeperClusterTestCase {
                         try {
                             recoverDoneLatch.await();
                         } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
                         }
                     }
                 }
@@ -197,11 +198,12 @@ public class LedgerCloseTest extends BookKeeperClusterTestCase {
             throws Exception {
         Bookie sBookie = new Bookie(conf) {
             @Override
-            public void addEntry(ByteBuf entry, WriteCallback cb, Object ctx, byte[] masterKey)
+            public void addEntry(ByteBuf entry, boolean ackBeforeSync, WriteCallback cb, Object ctx, byte[] masterKey)
                     throws IOException, BookieException {
                 try {
                     latch.await();
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 }
                 throw BookieException.create(BookieException.Code.UnauthorizedAccessException);
             }
@@ -221,11 +223,12 @@ public class LedgerCloseTest extends BookKeeperClusterTestCase {
     private void startDeadBookie(ServerConfiguration conf, final CountDownLatch latch) throws Exception {
         Bookie dBookie = new Bookie(conf) {
             @Override
-            public void addEntry(ByteBuf entry, WriteCallback cb, Object ctx, byte[] masterKey)
+            public void addEntry(ByteBuf entry, boolean ackBeforeSync, WriteCallback cb, Object ctx, byte[] masterKey)
                     throws IOException, BookieException {
                 try {
                     latch.await();
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 }
                 // simulate slow adds.
                 throw new IOException("Dead bookie");

@@ -171,7 +171,7 @@ public class BookieJournalTest {
 
     private static void moveToPosition(JournalChannel jc, long pos) throws IOException {
         jc.fc.position(pos);
-        jc.bc.position = pos;
+        jc.bc.position.set(pos);
         jc.bc.writeBufferStartPosition.set(pos);
     }
 
@@ -211,7 +211,7 @@ public class BookieJournalTest {
             bc.write(packet);
             packet.release();
         }
-        bc.flush(true);
+        bc.flushAndForceWrite(false);
 
         updateJournalVersion(jc, JournalChannel.V2);
 
@@ -245,7 +245,7 @@ public class BookieJournalTest {
             bc.write(packet);
             packet.release();
         }
-        bc.flush(true);
+        bc.flushAndForceWrite(false);
 
         updateJournalVersion(jc, JournalChannel.V3);
 
@@ -284,7 +284,7 @@ public class BookieJournalTest {
         lenBuf.writeInt(packet.readableBytes());
         bc.write(lenBuf);
         bc.write(packet);
-        bc.flush(true);
+        bc.flushAndForceWrite(false);
         updateJournalVersion(jc, JournalChannel.V4);
         return jc;
     }
@@ -324,7 +324,7 @@ public class BookieJournalTest {
         bc.write(lenBuf);
         bc.write(packet);
         Journal.writePaddingBytes(jc, paddingBuff, JournalChannel.SECTOR_SIZE);
-        bc.flush(true);
+        bc.flushAndForceWrite(false);
         updateJournalVersion(jc, JournalChannel.V5);
         return jc;
     }
@@ -348,7 +348,7 @@ public class BookieJournalTest {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         Bookie b = new Bookie(conf);
         b.readJournal();
@@ -377,7 +377,7 @@ public class BookieJournalTest {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         Bookie b = new Bookie(conf);
         b.readJournal();
@@ -408,7 +408,7 @@ public class BookieJournalTest {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         Bookie b = new Bookie(conf);
         b.readJournal();
@@ -445,7 +445,7 @@ public class BookieJournalTest {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         Bookie b = null;
         try {
@@ -480,7 +480,7 @@ public class BookieJournalTest {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         Bookie b = new Bookie(conf);
     }
@@ -502,7 +502,7 @@ public class BookieJournalTest {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         Bookie b = new Bookie(conf);
     }
@@ -521,14 +521,14 @@ public class BookieJournalTest {
 
         JournalChannel jc = writeV2Journal(Bookie.getCurrentDirectory(journalDir), 0);
         jc.getBufferedChannel().write(Unpooled.wrappedBuffer("JunkJunkJunk".getBytes()));
-        jc.getBufferedChannel().flush(true);
+        jc.getBufferedChannel().flushAndForceWrite(false);
 
         writeIndexFileForLedger(ledgerDir, 1, "testPasswd".getBytes());
 
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         Bookie b = null;
         try {
@@ -568,7 +568,7 @@ public class BookieJournalTest {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         Bookie b = new Bookie(conf);
         b.readJournal();
@@ -612,7 +612,7 @@ public class BookieJournalTest {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         Bookie b = new Bookie(conf);
         b.readJournal();
@@ -674,7 +674,7 @@ public class BookieJournalTest {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         if (truncateMasterKey) {
             try {
@@ -732,7 +732,7 @@ public class BookieJournalTest {
         ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setJournalDirName(journalDir.getPath())
             .setLedgerDirNames(new String[] { ledgerDir.getPath() })
-            .setZkServers(null);
+            .setMetadataServiceUri(null);
 
         Bookie b = new Bookie(conf);
         b.readJournal();

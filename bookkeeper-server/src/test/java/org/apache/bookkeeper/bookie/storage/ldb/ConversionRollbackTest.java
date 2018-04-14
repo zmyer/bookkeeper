@@ -40,6 +40,7 @@ import org.apache.bookkeeper.bookie.Checkpointer;
 import org.apache.bookkeeper.bookie.InterleavedLedgerStorage;
 import org.apache.bookkeeper.bookie.LedgerDirsManager;
 import org.apache.bookkeeper.conf.ServerConfiguration;
+import org.apache.bookkeeper.conf.TestBKConfiguration;
 import org.apache.bookkeeper.stats.NullStatsLogger;
 import org.apache.bookkeeper.util.DiskChecker;
 import org.apache.commons.io.FileUtils;
@@ -69,6 +70,11 @@ public class ConversionRollbackTest {
         public void startCheckpoint(Checkpoint checkpoint) {
             // No-op
         }
+
+        @Override
+        public void start() {
+            // no-op
+        }
     };
 
     @Test
@@ -81,9 +87,8 @@ public class ConversionRollbackTest {
 
         log.info("Using temp directory: {}", tmpDir);
 
-        ServerConfiguration conf = new ServerConfiguration();
+        ServerConfiguration conf = TestBKConfiguration.newServerConfiguration();
         conf.setLedgerDirNames(new String[] { tmpDir.toString() });
-        conf.setAllowLoopback(true);
         LedgerDirsManager ledgerDirsManager = new LedgerDirsManager(conf, conf.getLedgerDirs(),
                 new DiskChecker(conf.getDiskUsageThreshold(), conf.getDiskUsageWarnThreshold()));
 

@@ -55,7 +55,8 @@ public class SlowBookieTest extends BookKeeperClusterTestCase {
     @Test
     public void testSlowBookie() throws Exception {
         ClientConfiguration conf = new ClientConfiguration();
-        conf.setReadTimeout(360).setZkServers(zkUtil.getZooKeeperConnectString());
+        conf.setReadTimeout(360)
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         BookKeeper bkc = new BookKeeper(conf);
 
@@ -101,7 +102,8 @@ public class SlowBookieTest extends BookKeeperClusterTestCase {
     @Test
     public void testBookieFailureWithSlowBookie() throws Exception {
         ClientConfiguration conf = new ClientConfiguration();
-        conf.setReadTimeout(5).setZkServers(zkUtil.getZooKeeperConnectString());
+        conf.setReadTimeout(5)
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         BookKeeper bkc = new BookKeeper(conf);
 
@@ -140,10 +142,10 @@ public class SlowBookieTest extends BookKeeperClusterTestCase {
         final CountDownLatch checklatch = new CountDownLatch(1);
         final AtomicInteger numFragments = new AtomicInteger(-1);
         lc.checkLedger(lh2, new GenericCallback<Set<LedgerFragment>>() {
-                public void operationComplete(int rc, Set<LedgerFragment> fragments) {
-                    LOG.debug("Checked ledgers returned {} {}", rc, fragments);
+                public void operationComplete(int rc, Set<LedgerFragment> badFragments) {
+                    LOG.debug("Checked ledgers returned {} {}", rc, badFragments);
                     if (rc == BKException.Code.OK) {
-                        numFragments.set(fragments.size());
+                        numFragments.set(badFragments.size());
                     }
                     checklatch.countDown();
                 }
@@ -155,7 +157,8 @@ public class SlowBookieTest extends BookKeeperClusterTestCase {
     @Test
     public void testManyBookieFailureWithSlowBookies() throws Exception {
         ClientConfiguration conf = new ClientConfiguration();
-        conf.setReadTimeout(5).setZkServers(zkUtil.getZooKeeperConnectString());
+        conf.setReadTimeout(5)
+            .setMetadataServiceUri(zkUtil.getMetadataServiceUri());
 
         BookKeeper bkc = new BookKeeper(conf);
 

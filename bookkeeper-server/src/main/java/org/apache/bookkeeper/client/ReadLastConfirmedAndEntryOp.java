@@ -121,7 +121,6 @@ class ReadLastConfirmedAndEntryOp implements BookkeeperInternalCallbacks.ReadEnt
                 content = lh.macManager.verifyDigestAndReturnData(entryId, buffer);
             } catch (BKException.BKDigestMatchException e) {
                 logErrorAndReattemptRead(bookieIndex, host, "Mac mismatch", BKException.Code.DigestMatchException);
-                buffer.release();
                 return false;
             }
 
@@ -360,7 +359,7 @@ class ReadLastConfirmedAndEntryOp implements BookkeeperInternalCallbacks.ReadEnt
                 // read
 
                 // Do it a bit pessimistically, only when finished trying all replicas
-                // to check whether we received more missed reads than maxMissedReadsAllowed
+                // to check whether we received more missed reads than requiredBookiesMissingEntryForRecovery
                 if (BKException.Code.BookieHandleNotAvailableException == firstError
                         && numMissedEntryReads > maxMissedReadsAllowed) {
                     firstError = BKException.Code.NoSuchEntryException;
@@ -555,6 +554,7 @@ class ReadLastConfirmedAndEntryOp implements BookkeeperInternalCallbacks.ReadEnt
             hasValidResponse = true;
 
             if (entryId != BookieProtocol.LAST_ADD_CONFIRMED) {
+                buffer.retain();
                 if (request.complete(rCtx.getBookieIndex(), bookie, buffer, entryId)) {
                     // callback immediately
                     if (rCtx.getLacUpdateTimestamp().isPresent()) {
@@ -568,6 +568,8 @@ class ReadLastConfirmedAndEntryOp implements BookkeeperInternalCallbacks.ReadEnt
                     submitCallback(BKException.Code.OK);
                     requestComplete.set(true);
                     heardFromHostsBitSet.set(rCtx.getBookieIndex(), true);
+                } else {
+                    buffer.release();
                 }
             } else {
                 emptyResponsesFromHostsBitSet.set(rCtx.getBookieIndex(), true);

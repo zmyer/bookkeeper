@@ -193,7 +193,7 @@ public class LedgerRecoveryTest extends BookKeeperClusterTestCase {
 
         Bookie fakeBookie = new Bookie(conf) {
             @Override
-            public void addEntry(ByteBuf entry, WriteCallback cb, Object ctx, byte[] masterKey)
+            public void addEntry(ByteBuf entry, boolean ackBeforeSync, WriteCallback cb, Object ctx, byte[] masterKey)
                     throws IOException, BookieException {
                 // drop request to simulate a slow and failed bookie
             }
@@ -443,7 +443,7 @@ public class LedgerRecoveryTest extends BookKeeperClusterTestCase {
             .setAddEntryTimeout(60000)
             .setRecoveryReadBatchSize(batchSize);
 
-        newConf.setZkServers(zkUtil.getZooKeeperConnectString());
+        newConf.setMetadataServiceUri(zkUtil.getMetadataServiceUri());
         BookKeeper newBk = new BookKeeper(newConf);
 
         LedgerHandle lh = newBk.createLedger(numBookies, 2, 2, digestType, "".getBytes());
